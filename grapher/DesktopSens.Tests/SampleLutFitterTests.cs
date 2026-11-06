@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Reflection;
+using Newtonsoft.Json;
 using grapher.Models.Mouse;
 using grapher.DesktopSens.Models;
 using Xunit;
@@ -394,6 +396,207 @@ namespace grapher.DesktopSens.Tests
             for (int i = 0; i < result.Length; i++)
                 Assert.True(result[i] == 0.0,
                     "Recalibrating the first distance zone should release every node.");
+        }
+
+        [Fact]
+        public void GreenCell_P90CeilFreeze_ProtectsMeanMedianP90AndMovementFromLaterZones()
+        {
+            var profile = CreateGreenSampleFitProfile();
+            var zone0 = MakeSyntheticTrial(1.0, 5.0, 5.0, 5.0);
+            zone0.AngleZoneIndex = 0;
+            zone0.DistanceZoneIndex = 0;
+            // Two final intervals are faster, making mean, sample median and
+            // displacement-weighted P90 distinct and P90 fall between nodes.
+            long baseTicks = (long)(Stopwatch.Frequency * 0.05);
+            long fastTicks = (long)(Stopwatch.Frequency * 0.01);
+            for (int i = 1; i < zone0.RawSamples.Count; i++)
+                zone0.RawSamples[i].Timestamp = zone0.RawSamples[i - 1].Timestamp +
+                    (i >= zone0.RawSamples.Count - 2 ? fastTicks : baseTicks);
+            profile.Trials.Add(zone0);
+
+            List<LutPoint> before = BuildSampleFitLut(profile);
+            double meanSpeed = zone0.FlickDistanceCm * 1000.0 / zone0.DurationMs;
+            double medianSpeed = Median(GetProjectedSampleSpeeds(zone0));
+            double p90Speed = WeightedP90(GetProjectedSampleSpeedWeights(zone0));
+            double meanFactorBefore = EvaluateLutPoints(before, meanSpeed);
+            double medianFactorBefore = EvaluateLutPoints(before, medianSpeed);
+            double p90FactorBefore = EvaluateLutPoints(before, p90Speed);
+            double predictedBefore = PredictMovement(before, zone0);
+
+            var frozenBefore = (double[])profile.FrozenSampleLutNodeFactorsByAngleZone[0].Clone();
+            Assert.True(frozenBefore.Any(x => x > 0.0));
+
+            var zone1 = MakeSyntheticTrial(2.5, 10.0, 10.0, 10.0);
+            zone1.AngleZoneIndex = 0;
+            zone1.DistanceZoneIndex = 1;
+            profile.Trials.Add(zone1);
+            MarkGreen(profile, 0, 1);
+
+            var zone2 = MakeSyntheticTrial(4.0, 15.0, 15.0, 15.0);
+            zone2.AngleZoneIndex = 0;
+            zone2.DistanceZoneIndex = 2;
+            profile.Trials.Add(zone2);
+            MarkGreen(profile, 0, 2);
+
+            List<LutPoint> after = BuildSampleFitLut(profile);
+            Assert.Equal(BitConverter.DoubleToInt64Bits(meanFactorBefore),
+                BitConverter.DoubleToInt64Bits(EvaluateLutPoints(after, meanSpeed)));
+            Assert.Equal(BitConverter.DoubleToInt64Bits(medianFactorBefore),
+                BitConverter.DoubleToInt64Bits(EvaluateLutPoints(after, medianSpeed)));
+            Assert.Equal(BitConverter.DoubleToInt64Bits(p90FactorBefore),
+                BitConverter.DoubleToInt64Bits(EvaluateLutPoints(after, p90Speed)));
+            Assert.Equal(BitConverter.DoubleToInt64Bits(predictedBefore),
+                BitConverter.DoubleToInt64Bits(PredictMovement(after, zone0)));
+
+            var frozenAfter = profile.FrozenSampleLutNodeFactorsByAngleZone[0];
+            for (int i = 0; i < frozenBefore.Length; i++)
+            {
+                if (frozenBefore[i] > 0.0)
+                    Assert.Equal(BitConverter.DoubleToInt64Bits(frozenBefore[i]),
+                        BitConverter.DoubleToInt64Bits(frozenAfter[i]));
+            }
+        }
+
+        [Fact]
+        public void ProfileJson_RoundTripsFrozenNodes_AndLegacyWithoutFieldLoads()
+        {
+            var profile = CreateGreenSampleFitProfile();
+            profile.FrozenSampleLutNodeFactorsByAngleZone[0] =
+                new[] { 1.25, 1.5, 0.0, 0.0 };
+            string json = JsonConvert.SerializeObject(profile);
+            var roundTrip = JsonConvert.DeserializeObject<DesktopSensProfile>(json);
+            Assert.Equal(
+                BitConverter.DoubleToInt64Bits(1.5),
+                BitConverter.DoubleToInt64Bits(roundTrip.FrozenSampleLutNodeFactorsByAngleZone[0][1]));
+
+            var legacy = JsonConvert.DeserializeObject<DesktopSensProfile>(
+                "{\"ModelVersion\":10,\"UseSampleFitLut\":true}");
+            Assert.NotNull(legacy);
+            Assert.NotNull(legacy.FrozenSampleLutNodeFactorsByAngleZone);
+        }
+
+        [Fact]
+        public void NewSessionAnchor_DoesNotChangeExistingFrozenNodeBits()
+        {
+            var profile = CreateGreenSampleFitProfile();
+            var trial = MakeSyntheticTrial(1.0, 5.0, 5.0, 5.0);
+            trial.AngleZoneIndex = 0;
+            trial.DistanceZoneIndex = 0;
+            profile.Trials.Add(trial);
+            BuildSampleFitLut(profile);
+            var frozen = (double[])profile.FrozenSampleLutNodeFactorsByAngleZone[0].Clone();
+
+            var anchor = MakeSyntheticTrial(1.0, 2.0, 2.0, 2.0);
+            anchor.IsSessionAnchor = true;
+            anchor.SessionId = "new-session";
+            anchor.AngleZoneIndex = 0;
+            anchor.DistanceZoneIndex = 0;
+            profile.Trials.Add(anchor);
+            BuildSampleFitLut(profile);
+
+            for (int i = 0; i < frozen.Length; i++)
+                if (frozen[i] > 0.0)
+                    Assert.Equal(BitConverter.DoubleToInt64Bits(frozen[i]),
+                        BitConverter.DoubleToInt64Bits(profile.FrozenSampleLutNodeFactorsByAngleZone[0][i]));
+        }
+
+        private static DesktopSensProfile CreateGreenSampleFitProfile()
+        {
+            var profile = new DesktopSensProfile
+            {
+                UseSampleFitLut = true,
+                CellTrainingStates = new Dictionary<int, TrainingCellState>(),
+                Trials = new List<DesktopSensTrial>()
+            };
+            MarkGreen(profile, 0, 0);
+            return profile;
+        }
+
+        private static void MarkGreen(DesktopSensProfile profile, int angleZone, int distanceZone)
+        {
+            profile.CellTrainingStates[DesktopSensProfile.GetCellIndex(angleZone, distanceZone)] =
+                new TrainingCellState { Verified = true, PrecisionVerified = true };
+        }
+
+        private static List<LutPoint> BuildSampleFitLut(DesktopSensProfile profile)
+        {
+            MethodInfo method = typeof(DesktopSensProfileMerger).GetMethod(
+                "BuildSampleFitLutPoints", BindingFlags.NonPublic | BindingFlags.Static);
+            Assert.NotNull(method);
+            return (List<LutPoint>)method.Invoke(null, new object[] { profile, 0, 0, 1.0 });
+        }
+
+        private static double EvaluateLutPoints(IList<LutPoint> points, double speed)
+        {
+            MethodInfo method = typeof(DesktopSensProfileMerger).GetMethod(
+                "EvaluateLutPoints", BindingFlags.NonPublic | BindingFlags.Static);
+            Assert.NotNull(method);
+            return (double)method.Invoke(null, new object[] { points, speed });
+        }
+
+        private static double PredictMovement(IList<LutPoint> points, DesktopSensTrial trial)
+        {
+            double axisX = Math.Cos(trial.TargetAngleDegrees * Math.PI / 180.0);
+            double axisY = Math.Sin(trial.TargetAngleDegrees * Math.PI / 180.0);
+            double cmPerCount = 2.54 / trial.EffectiveCpi;
+            double predicted = 0.0;
+            long previousTimestamp = trial.RawSamples[0].Timestamp;
+            for (int i = 1; i < trial.RawSamples.Count; i++)
+            {
+                var sample = trial.RawSamples[i];
+                long dtTicks = sample.Timestamp - previousTimestamp;
+                previousTimestamp = sample.Timestamp;
+                if (dtTicks <= 0) continue;
+                double dt = dtTicks / (double)Stopwatch.Frequency;
+                double displacement = (sample.DX * axisX + sample.DY * axisY) * cmPerCount;
+                double speed = Math.Abs(displacement) / dt;
+                predicted += EvaluateLutPoints(points, speed) * displacement;
+            }
+            return predicted;
+        }
+
+        private static List<double> GetProjectedSampleSpeeds(DesktopSensTrial trial)
+        {
+            return GetProjectedSampleSpeedWeights(trial).Select(x => x.speed).ToList();
+        }
+
+        private static List<(double speed, double weight)> GetProjectedSampleSpeedWeights(
+            DesktopSensTrial trial)
+        {
+            var result = new List<(double, double)>();
+            double cmPerCount = 2.54 / trial.EffectiveCpi;
+            long previousTimestamp = trial.RawSamples[0].Timestamp;
+            for (int i = 1; i < trial.RawSamples.Count; i++)
+            {
+                var sample = trial.RawSamples[i];
+                long dtTicks = sample.Timestamp - previousTimestamp;
+                previousTimestamp = sample.Timestamp;
+                if (dtTicks <= 0) continue;
+                double displacement = sample.DX * cmPerCount;
+                double speed = Math.Abs(displacement) / (dtTicks / (double)Stopwatch.Frequency);
+                result.Add((speed, Math.Abs(displacement)));
+            }
+            return result;
+        }
+
+        private static double Median(List<double> values)
+        {
+            values.Sort();
+            int mid = values.Count / 2;
+            return values.Count % 2 == 0 ? (values[mid - 1] + values[mid]) * 0.5 : values[mid];
+        }
+
+        private static double WeightedP90(List<(double speed, double weight)> values)
+        {
+            values.Sort((a, b) => a.speed.CompareTo(b.speed));
+            double total = values.Sum(x => x.weight);
+            double accumulated = 0.0;
+            foreach (var value in values)
+            {
+                accumulated += value.weight;
+                if (accumulated >= total * 0.90) return value.speed;
+            }
+            return values[values.Count - 1].speed;
         }
 
         private static DesktopSensTrial MakeSyntheticTrial(
