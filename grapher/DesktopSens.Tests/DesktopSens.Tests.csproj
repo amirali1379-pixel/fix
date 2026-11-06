@@ -1,0 +1,32 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFrameworks>net472;net8.0</TargetFrameworks>
+    <LangVersion>7.3</LangVersion>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+    <!-- The net472 target is the production-matching target on Windows.
+         The net8.0 target is added so the model-layer test suite can be
+         run on Linux (this sandbox has no mono). CI on Windows can run
+         both targets; on Linux only the net8.0 target is runnable. -->
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- Provide net472 reference assemblies on Linux/Mac so dotnet build
+         can target net472 without a Windows SDK install. This is required
+         for the build step described in the user directive:
+         "dotnet build برای net472 و net8.0 باید بدون خطا باشد". -->
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3">
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />
+    <PackageReference Include="xunit" Version="2.9.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2">
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="../DesktopSens/Models/**/*.cs"
+             Link="Models/%(RecursiveDir)%(Filename)%(Extension)" />
+  </ItemGroup>
+</Project>
