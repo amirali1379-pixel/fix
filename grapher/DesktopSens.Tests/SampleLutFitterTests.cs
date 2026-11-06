@@ -501,6 +501,49 @@ namespace grapher.DesktopSens.Tests
         }
 
         [Fact]
+        public void ResetCellAfterItsTrialsWereDeleted_StillUnfreezesDownstreamNodes()
+        {
+            var profile = CreateGreenSampleFitProfile();
+            MarkGreen(profile, 0, 1);
+            var previous = MakeSyntheticTrial(1.0, 5.0, 5.0, 5.0);
+            previous.AngleZoneIndex = 0;
+            previous.DistanceZoneIndex = 0;
+            var deletedCellTrial = MakeSyntheticTrial(2.5, 10.0, 10.0, 10.0);
+            deletedCellTrial.AngleZoneIndex = 0;
+            deletedCellTrial.DistanceZoneIndex = 1;
+            profile.Trials.Add(previous);
+            profile.Trials.Add(deletedCellTrial);
+
+            var frozen = new double[DesktopSensConstants.SampleLutDefaultNodes];
+            for (int i = 0; i < frozen.Length; i++) frozen[i] = 1.25;
+            profile.FrozenSampleLutNodeFactorsByAngleZone[0] = frozen;
+
+            double priorP90 = WeightedP90(GetProjectedSampleSpeedWeights(previous));
+            int priorFreezeThrough = 0;
+            for (int node = 0; node < frozen.Length; node++)
+            {
+                double nodeSpeed = Math.Exp(
+                    Math.Log(DesktopSensConstants.SampleLutMinSpeedCmPerSec) +
+                    (double)node / (frozen.Length - 1) *
+                    (Math.Log(DesktopSensConstants.SampleLutMaxSpeedCmPerSec) -
+                     Math.Log(DesktopSensConstants.SampleLutMinSpeedCmPerSec)));
+                if (nodeSpeed >= priorP90)
+                {
+                    priorFreezeThrough = node;
+                    break;
+                }
+            }
+
+            profile.Trials.Remove(deletedCellTrial);
+            Assert.True(DesktopSensTrainingState.ResetCell(profile, 0, 1));
+            var result = profile.FrozenSampleLutNodeFactorsByAngleZone[0];
+            for (int node = 0; node <= priorFreezeThrough; node++)
+                Assert.Equal(1.25, result[node]);
+            for (int node = priorFreezeThrough + 1; node < result.Length; node++)
+                Assert.Equal(0.0, result[node]);
+        }
+
+        [Fact]
         public void ProfileJson_RoundTripsFrozenNodes_AndLegacyWithoutFieldLoads()
         {
             var profile = CreateGreenSampleFitProfile();
