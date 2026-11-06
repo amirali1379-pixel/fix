@@ -419,6 +419,8 @@ namespace grapher.DesktopSens.Tests
             double meanSpeed = zone0.FlickDistanceCm * 1000.0 / zone0.DurationMs;
             double medianSpeed = Median(GetProjectedSampleSpeeds(zone0));
             double p90Speed = WeightedP90(GetProjectedSampleSpeedWeights(zone0));
+            Assert.True(IsBetweenFixedGridNodes(medianSpeed),
+                "The regression intentionally places the cell median between two LUT nodes.");
             double meanFactorBefore = EvaluateLutPoints(before, meanSpeed);
             double medianFactorBefore = EvaluateLutPoints(before, medianSpeed);
             double p90FactorBefore = EvaluateLutPoints(before, p90Speed);
@@ -663,6 +665,21 @@ namespace grapher.DesktopSens.Tests
                 result.Add((speed, Math.Abs(displacement)));
             }
             return result;
+        }
+
+        private static bool IsBetweenFixedGridNodes(double speed)
+        {
+            int count = DesktopSensConstants.SampleLutDefaultNodes;
+            double logMin = Math.Log(DesktopSensConstants.SampleLutMinSpeedCmPerSec);
+            double logMax = Math.Log(DesktopSensConstants.SampleLutMaxSpeedCmPerSec);
+            double previous = Math.Exp(logMin);
+            for (int node = 1; node < count; node++)
+            {
+                double current = Math.Exp(logMin + (double)node / (count - 1) * (logMax - logMin));
+                if (speed > previous && speed < current) return true;
+                previous = current;
+            }
+            return false;
         }
 
         private static double Median(List<double> values)
