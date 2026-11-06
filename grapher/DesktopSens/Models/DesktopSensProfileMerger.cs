@@ -853,36 +853,8 @@ namespace grapher.DesktopSens.Models
 
             if (eligible.Count == 0) return points;
 
-            // NEW (Model v6, per-point isolation): feed the previously-built
-            // LUT points for this angle zone as anchors. Verified green cells
-            // contribute their (speed, factor) so the new fit cannot rewrite
-            // the curve at speeds the user already verified. This is what
-            // keeps the per-cell factors of earlier zones stable while the
-            // user keeps training later zones — without it, every new trial
-            // would re-fit the whole curve and could drift an earlier zone's
-            // factor away from what the driver currently applies.
-            List<(double speedCmPerSec, double factor)> anchors = null;
-            if (profile.LastBuiltLutPointsByAngleZone != null &&
-                profile.LastBuiltLutPointsByAngleZone.TryGetValue(angleZone, out var prevPoints) &&
-                prevPoints != null && prevPoints.Count > 0 &&
-                profile.LastBuiltLutBaseFactorByAngleZone != null &&
-                profile.LastBuiltLutBaseFactorByAngleZone.TryGetValue(angleZone, out double previousBaseFactor) &&
-                IsFinite(previousBaseFactor) && previousBaseFactor > 0.0 &&
-                IsFinite(targetBaseFactor) && targetBaseFactor > 0.0)
-            {
-                // Preserve the previously-applied TOTAL directional output
-                // when Base Sens changes: oldBase * oldLut == newBase * newLut.
-                double anchorScale = previousBaseFactor / targetBaseFactor;
-                anchors = new List<(double, double)>(prevPoints.Count);
-                foreach (var p in prevPoints)
-                {
-                    double factor = p.Factor * anchorScale;
-                    if (IsFinite(p.InputSpeedCmPerSec) && p.InputSpeedCmPerSec > 0.0 &&
-                        IsFinite(factor) && factor > 0.0)
-                        anchors.Add((p.InputSpeedCmPerSec, factor));
-                }
-                if (anchors.Count == 0) anchors = null;
-            }
+            // Soft anchor fitting is intentionally removed: persisted node
+            // constraints are the sole source of frozen-cell isolation.
 
             // Exact per-node frozen factors are persisted on the profile.
             // These constraints supersede historical soft anchors.
