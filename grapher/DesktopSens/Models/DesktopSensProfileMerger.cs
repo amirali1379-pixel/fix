@@ -1015,47 +1015,65 @@ namespace grapher.DesktopSens.Models
                 frozen == null || frozen.Length != DesktopSensConstants.SampleLutDefaultNodes)
                 return false;
 
-            var speeds = new List<double>();
-            var previousZoneSpeeds = new List<double>();
+            var currentCellSamples = new List<(double speed, double displacementWeight)>();
+            var previousCellSamples = new List<(double speed, double displacementWeight)>();
             if (profile.Trials != null)
             {
                 foreach (var trial in profile.Trials)
                 {
                     if (trial == null || trial.IsEvaluationOnly || trial.IsSessionAnchor ||
                         trial.IsCalibrationExcluded || trial.WasRejected ||
-                        trial.AngleZoneIndex != angleZone ||
-                        !IsFinite(trial.FlickDistanceCm) || trial.FlickDistanceCm <= 0.0 ||
-                        !IsFinite(trial.DurationMs) || trial.DurationMs <= 0.0)
+                        trial.AngleZoneIndex != angleZone)
                         continue;
-                    double speed = trial.FlickDistanceCm * 1000.0 / trial.DurationMs;
-                    if (!IsFinite(speed) || speed <= 0.0) continue;
-                    if (trial.DistanceZoneIndex == distanceZone) speeds.Add(speed);
-                    if (distanceZone > 0 && trial.DistanceZoneIndex == distanceZone - 1)
-                        previousZoneSpeeds.Add(speed);
+                    var sampleSpeeds = GetProjectedSpeedSamplesForFreeze(trial);
+                    if (sampleSpeeds.Count == 0 &&
+                        IsFinite(trial.FlickDistanceCm) && trial.FlickDistanceCm > 0.0 &&
+                        IsFinite(trial.DurationMs) && trial.DurationMs > 0.0)
+                        sampleSpeeds.Add((trial.FlickDistanceCm * 1000.0 / trial.DurationMs,
+                            trial.FlickDistanceCm));
+
+                    if (trial.DistanceZoneIndex == distanceZone)
+                        currentCellSamples.AddRange(sampleSpeeds);
+                    else if (distanceZone > 0 && trial.DistanceZoneIndex == distanceZone - 1)
+                    {
+                        int previousCellIndex = DesktopSensProfile.GetCellIndex(angleZone, distanceZone - 1);
+                        bool previousCellGreen = profile.CellTrainingStates != null &&
+                            profile.CellTrainingStates.TryGetValue(previousCellIndex, out var previousState) &&
+                            previousState != null && previousState.Verified && previousState.PrecisionVerified;
+                        if (previousCellGreen)
+                            previousCellSamples.AddRange(sampleSpeeds);
+                    }
                 }
             }
-            if (speeds.Count == 0)
+            if (currentCellSamples.Count == 0)
             {
                 DesktopSensLog.Warn("SampleLut unfreeze requested but no speed samples found: angleZone=" +
                     angleZone + " distanceZone=" + distanceZone);
                 return false;
             }
-            speeds.Sort();
-            int mid = speeds.Count / 2;
-            double cellSpeed = speeds.Count % 2 == 0
-                ? (speeds[mid - 1] + speeds[mid]) * 0.5 : speeds[mid];
-            double unfreezeFromSpeed = DesktopSensConstants.SampleLutMinSpeedCmPerSec;
-            if (distanceZone > 0 && previousZoneSpeeds.Count > 0)
+
+            // Node ownership follows each green cell's weighted-P90 ceil
+            // boundary. Preserve the prior green cell's inclusive boundary
+            // and release the following node onward (current cell + higher).
+            int firstNodeToUnfreeze = 0;
+            if (distanceZone > 0 && previousCellSamples.Count > 0)
             {
-                previousZoneSpeeds.Sort();
-                int prevMid = previousZoneSpeeds.Count / 2;
-                double previousMedian = previousZoneSpeeds.Count % 2 == 0
-                    ? (previousZoneSpeeds[prevMid - 1] + previousZoneSpeeds[prevMid]) * 0.5
-                    : previousZoneSpeeds[prevMid];
-                unfreezeFromSpeed = (previousMedian + cellSpeed) * 0.5;
+                double previousP90 = WeightedPercentile(previousCellSamples, 0.90);
+                if (IsFinite(previousP90) && previousP90 > 0.0)
+                {
+                    int previousFreezeThrough = frozen.Length - 1;
+                    for (int node = 0; node < frozen.Length; node++)
+                    {
+                        double nodeSpeed = GetFixedNodeSpeed(node, frozen.Length);
+                        if (nodeSpeed >= previousP90)
+                        {
+                            previousFreezeThrough = node;
+                            break;
+                        }
+                    }
+                    firstNodeToUnfreeze = Math.Min(frozen.Length, previousFreezeThrough + 1);
+                }
             }
-            else if (distanceZone > 0)
-                unfreezeFromSpeed = cellSpeed;
 
             double minNodeSpeed = DesktopSensConstants.SampleLutMinSpeedCmPerSec;
             double maxNodeSpeed = DesktopSensConstants.SampleLutMaxSpeedCmPerSec;
@@ -1064,9 +1082,8 @@ namespace grapher.DesktopSens.Models
             int unfrozen = 0;
             for (int node = 0; node < frozen.Length; node++)
             {
-                double t = (double)node / (frozen.Length - 1);
-                double nodeSpeed = Math.Exp(logMin + (logMax - logMin) * t);
-                if (nodeSpeed < unfreezeFromSpeed) continue;
+                if (node < firstNodeToUnfreeze) continue;
+                double nodeSpeed = GetFixedNodeSpeed(node, frozen.Length);
                 if (IsFinite(frozen[node]) && frozen[node] > 0.0)
                 {
                     DesktopSensLog.Info("SampleLut unfreeze: angleZone=" + angleZone +
@@ -1077,6 +1094,9 @@ namespace grapher.DesktopSens.Models
                 frozen[node] = 0.0;
             }
             profile.FrozenSampleLutNodeFactorsByAngleZone[angleZone] = frozen;
+            DesktopSensLog.Info("SampleLut unfreeze completed: angleZone=" + angleZone +
+                " distanceZone=" + distanceZone + " releasedNodes=" + unfrozen +
+                " firstNode=" + firstNodeToUnfreeze);
             return unfrozen > 0;
         }
 
@@ -1138,6 +1158,15 @@ namespace grapher.DesktopSens.Models
                 if (accumulated >= targetWeight) return sample.speed;
             }
             return sorted[sorted.Count - 1].speed;
+        }
+
+        private static double GetFixedNodeSpeed(int node, int nodeCount)
+        {
+            if (nodeCount <= 1) return DesktopSensConstants.SampleLutMinSpeedCmPerSec;
+            double logMin = Math.Log(DesktopSensConstants.SampleLutMinSpeedCmPerSec);
+            double logMax = Math.Log(DesktopSensConstants.SampleLutMaxSpeedCmPerSec);
+            double t = (double)node / (nodeCount - 1);
+            return Math.Exp(logMin + (logMax - logMin) * t);
         }
 
         private static double[] CreateFreeNodeArray(int count)
