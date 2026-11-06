@@ -1929,11 +1929,13 @@ namespace grapher.DesktopSens.Views
             // close mid-axis would lose the verified cells.
             int cellIndex = DesktopSensProfile.GetCellIndex(angleZone, _selectedDistanceZone);
             bool wasVerifiedBefore = false;
+            bool wasPrecisionVerifiedBefore = false;
             bool wasFirstRoundBefore = false;
             string verifiedSessionBefore = null;
             if (_profile.CellTrainingStates.TryGetValue(cellIndex, out var prevState) && prevState != null)
             {
                 wasVerifiedBefore = prevState.Verified;
+                wasPrecisionVerifiedBefore = prevState.PrecisionVerified;
                 wasFirstRoundBefore = prevState.FirstRoundComplete;
                 verifiedSessionBefore = prevState.VerifiedSessionId;
             }
@@ -2001,11 +2003,13 @@ namespace grapher.DesktopSens.Views
             // cell. If the cell just turned green, persist the profile
             // immediately so the chain survives a trainer crash or close.
             bool isVerifiedNow = false;
+            bool isPrecisionVerifiedNow = false;
             bool isFirstRoundNow = false;
             string verifiedSessionNow = null;
             if (_profile.CellTrainingStates.TryGetValue(cellIndex, out var postState) && postState != null)
             {
                 isVerifiedNow = postState.Verified;
+                isPrecisionVerifiedNow = postState.PrecisionVerified;
                 isFirstRoundNow = postState.FirstRoundComplete;
                 verifiedSessionNow = postState.VerifiedSessionId;
             }
@@ -2017,7 +2021,9 @@ namespace grapher.DesktopSens.Views
             // A previously green cell that loses verification no longer owns
             // its frozen LUT segment. Release this cell's nodes and every
             // higher-speed dependent node before the next sample-fit build.
-            if (wasVerifiedBefore && !isVerifiedNow)
+            bool wasGreenBefore = wasVerifiedBefore && wasPrecisionVerifiedBefore;
+            bool isGreenNow = isVerifiedNow && isPrecisionVerifiedNow;
+            if (wasGreenBefore && !isGreenNow)
             {
                 DesktopSensProfileMerger.UnfreezeSampleLutFromCell(
                     _profile, angleZone, _selectedDistanceZone);
