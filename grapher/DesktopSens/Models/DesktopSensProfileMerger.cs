@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 
 namespace grapher.DesktopSens.Models
@@ -923,54 +924,68 @@ namespace grapher.DesktopSens.Models
                     ? (double[])stored.Clone()
                     : CreateFreeNodeArray(fit.NodeFactors.Length);
 
-            var greenMedianSpeedByCell = new Dictionary<int, double>();
-            var greenSpeedsForFreeze = new Dictionary<int, List<double>>();
+            var greenSpeedSamplesByCell =
+                new Dictionary<int, List<(double speed, double displacementWeight)>>();
             foreach (var trial in eligible)
             {
                 int cellIndex = DesktopSensProfile.GetCellIndex(angleZone, trial.DistanceZoneIndex);
                 if (profile.CellTrainingStates == null ||
                     !profile.CellTrainingStates.TryGetValue(cellIndex, out var state) ||
-                    state == null || !state.Verified || !state.PrecisionVerified) continue;
-                if (!IsFinite(trial.FlickDistanceCm) || trial.FlickDistanceCm <= 0.0 ||
-                    !IsFinite(trial.DurationMs) || trial.DurationMs <= 0.0) continue;
-                double speed = trial.FlickDistanceCm * 1000.0 / trial.DurationMs;
-                if (!IsFinite(speed) || speed <= 0.0) continue;
-                if (!greenMedianSpeedByCell.TryGetValue(cellIndex, out double current))
-                    greenMedianSpeedByCell[cellIndex] = speed;
-                else
+                    state == null || !state.Verified || !state.PrecisionVerified)
+                    continue;
+
+                List<(double speed, double displacementWeight)> cellSamples =
+                    GetProjectedSpeedSamplesForFreeze(trial);
+                if (cellSamples.Count == 0 &&
+                    IsFinite(trial.FlickDistanceCm) && trial.FlickDistanceCm > 0.0 &&
+                    IsFinite(trial.DurationMs) && trial.DurationMs > 0.0)
                 {
-                    // Keep the complete sample set for a true median below.
-                    if (!greenSpeedsForFreeze.TryGetValue(cellIndex, out var speeds))
-                    {
-                        speeds = new List<double> { current };
-                        greenSpeedsForFreeze[cellIndex] = speeds;
-                    }
-                    speeds.Add(speed);
+                    // Legacy profiles without raw samples: use their recorded
+                    // mean speed as a conservative compatibility fallback.
+                    cellSamples.Add((trial.FlickDistanceCm * 1000.0 / trial.DurationMs,
+                        trial.FlickDistanceCm));
                 }
+                if (cellSamples.Count == 0) continue;
+                if (!greenSpeedSamplesByCell.TryGetValue(cellIndex, out var accumulated))
+                {
+                    accumulated = new List<(double, double)>();
+                    greenSpeedSamplesByCell[cellIndex] = accumulated;
+                }
+                accumulated.AddRange(cellSamples);
             }
 
-            foreach (var cell in greenMedianSpeedByCell)
+            foreach (var cell in greenSpeedSamplesByCell)
             {
-                // Use median accepted trial speed, not the max, to avoid
-                // prematurely freezing nodes from a high-speed outlier.
-                List<double> cellSpeeds;
-                if (greenSpeedsForFreeze.TryGetValue(cell.Key, out cellSpeeds))
-                    cellSpeeds.Sort();
-                double maxSpeed = cellSpeeds != null && cellSpeeds.Count > 0
-                    ? (cellSpeeds.Count % 2 == 0
-                        ? (cellSpeeds[cellSpeeds.Count / 2 - 1] + cellSpeeds[cellSpeeds.Count / 2]) * 0.5
-                        : cellSpeeds[cellSpeeds.Count / 2])
-                    : cell.Value;
+                // Weighted P90 of instantaneous target-axis speeds. Weights
+                // are |projected displacement| in cm, so short/noisy samples
+                // contribute less than samples that account for meaningful
+                // motion. This matches SampleLutFitter.ExtractProjectedSamples.
+                double p90Speed = WeightedPercentile(cell.Value, 0.90);
+                if (!IsFinite(p90Speed) || p90Speed <= 0.0) continue;
+
+                // Freeze through (inclusive) the first fixed-grid node whose
+                // speed is >= P90. This is a ceil boundary: interpolation at
+                // the cell's upper observed speed cannot depend on a free node.
+                int freezeThroughNode = fit.NodeSpeedCmPerSec.Length - 1;
                 for (int node = 0; node < fit.NodeSpeedCmPerSec.Length; node++)
                 {
-                    if (fit.NodeSpeedCmPerSec[node] > maxSpeed) continue;
+                    if (fit.NodeSpeedCmPerSec[node] >= p90Speed)
+                    {
+                        freezeThroughNode = node;
+                        break;
+                    }
+                }
+
+                for (int node = 0; node <= freezeThroughNode; node++)
+                {
                     if (!IsFinite(frozen[node]) || frozen[node] <= 0.0)
                     {
                         frozen[node] = fit.NodeFactors[node];
                         DesktopSensLog.Info("SampleLut freeze: angleZone=" + angleZone +
                             " cellIndex=" + cell.Key + " node=" + node +
                             " speed=" + fit.NodeSpeedCmPerSec[node].ToString("0.###") +
-                            " factor=" + frozen[node].ToString("0.########"));
+                            " factor=" + frozen[node].ToString("0.########") +
+                            " weightedP90=" + p90Speed.ToString("0.###"));
                     }
                 }
             }
@@ -1063,6 +1078,66 @@ namespace grapher.DesktopSens.Models
             }
             profile.FrozenSampleLutNodeFactorsByAngleZone[angleZone] = frozen;
             return unfrozen > 0;
+        }
+
+        private static List<(double speed, double displacementWeight)> GetProjectedSpeedSamplesForFreeze(
+            DesktopSensTrial trial)
+        {
+            var result = new List<(double, double)>();
+            if (trial == null || trial.RawSamples == null || trial.RawSamples.Count < 2 ||
+                !IsFinite(trial.EffectiveCpi) || trial.EffectiveCpi <= 0.0)
+                return result;
+
+            // Keep the same target-axis projection and timebase as
+            // SampleLutFitter.ExtractProjectedSamples.
+            double angle = trial.TargetAngleDegrees * Math.PI / 180.0;
+            double axisX = Math.Cos(angle);
+            double axisY = Math.Sin(angle);
+            double cmPerCount = DesktopSensConstants.InchesToCm / trial.EffectiveCpi;
+            long previousTimestamp = trial.RawSamples[0].Timestamp;
+            for (int i = 1; i < trial.RawSamples.Count; i++)
+            {
+                var sample = trial.RawSamples[i];
+                long deltaTicks = sample.Timestamp - previousTimestamp;
+                previousTimestamp = sample.Timestamp;
+                if (deltaTicks <= 0) continue;
+                double dtSec = deltaTicks / (double)Stopwatch.Frequency;
+                double projectedCounts = sample.DX * axisX + sample.DY * axisY;
+                double displacementCm = projectedCounts * cmPerCount;
+                double speed = Math.Abs(displacementCm) / dtSec;
+                double weight = Math.Abs(displacementCm);
+                if (IsFinite(speed) && speed > 0.0 &&
+                    IsFinite(weight) && weight > 0.0)
+                    result.Add((speed, weight));
+            }
+            return result;
+        }
+
+        private static double WeightedPercentile(
+            IList<(double speed, double displacementWeight)> samples,
+            double percentile)
+        {
+            if (samples == null || samples.Count == 0) return double.NaN;
+            var sorted = new List<(double speed, double weight)>();
+            double totalWeight = 0.0;
+            foreach (var sample in samples)
+            {
+                if (!IsFinite(sample.speed) || sample.speed <= 0.0 ||
+                    !IsFinite(sample.displacementWeight) || sample.displacementWeight <= 0.0)
+                    continue;
+                sorted.Add((sample.speed, sample.displacementWeight));
+                totalWeight += sample.displacementWeight;
+            }
+            if (sorted.Count == 0 || totalWeight <= 0.0) return double.NaN;
+            sorted.Sort((a, b) => a.speed.CompareTo(b.speed));
+            double targetWeight = Math.Max(0.0, Math.Min(1.0, percentile)) * totalWeight;
+            double accumulated = 0.0;
+            foreach (var sample in sorted)
+            {
+                accumulated += sample.weight;
+                if (accumulated >= targetWeight) return sample.speed;
+            }
+            return sorted[sorted.Count - 1].speed;
         }
 
         private static double[] CreateFreeNodeArray(int count)
