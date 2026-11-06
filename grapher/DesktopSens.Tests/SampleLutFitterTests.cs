@@ -361,7 +361,7 @@ namespace grapher.DesktopSens.Tests
                 MakeSyntheticTrial(160, 35.0, 35.0, 28.0)
             };
             var frozen = new double[DesktopSensConstants.SampleLutDefaultNodes];
-            for (int i = 0; i < frozen.Length; i++) frozen[i] = double.NaN;
+            for (int i = 0; i < frozen.Length; i++) frozen[i] = 0.0;
             frozen[2] = 1.23456789012345;
             frozen[3] = 0.87654321098765;
 
@@ -390,7 +390,7 @@ namespace grapher.DesktopSens.Tests
             Assert.True(DesktopSensProfileMerger.UnfreezeSampleLutFromCell(profile, 0, 0));
             var result = profile.FrozenSampleLutNodeFactorsByAngleZone[0];
             for (int i = 0; i < result.Length; i++)
-                Assert.True(double.IsNaN(result[i]),
+                Assert.Equal(0.0, result[i]);
                     "Recalibrating the first distance zone should release every node.");
         }
 
