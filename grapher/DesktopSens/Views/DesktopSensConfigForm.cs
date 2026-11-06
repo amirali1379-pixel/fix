@@ -2255,7 +2255,7 @@ namespace grapher.DesktopSens.Views
                                     if (nodeArray == null) continue;
                                     foreach (double factor in nodeArray)
                                     {
-                                        if (IsFiniteValue(factor) && factor > 0.0)
+                                        if (!double.IsNaN(factor) && !double.IsInfinity(factor) && factor > 0.0)
                                         {
                                             hasPersistedFrozenNodes = true;
                                             break;
