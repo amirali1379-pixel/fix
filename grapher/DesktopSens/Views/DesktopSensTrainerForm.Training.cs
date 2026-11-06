@@ -2216,6 +2216,15 @@ namespace grapher.DesktopSens.Views
             else
                 _profile.CellTrainingStates = new Dictionary<int, TrainingCellState>();
 
+            // Frozen sample-fit LUT node ownership is training state too.
+            // A full reset must clear it alongside cell verification state.
+            if (_profile.FrozenSampleLutNodeFactorsByAngleZone != null)
+                _profile.FrozenSampleLutNodeFactorsByAngleZone.Clear();
+            if (_profile.LastBuiltLutPointsByAngleZone != null)
+                _profile.LastBuiltLutPointsByAngleZone.Clear();
+            if (_profile.LastBuiltLutBaseFactorByAngleZone != null)
+                _profile.LastBuiltLutBaseFactorByAngleZone.Clear();
+
             // 2. Clear the trial list. The calibrator derives everything
             // from this list, so if we left the trials in place the
             // per-cell factors would reappear on the next Calibrate()
