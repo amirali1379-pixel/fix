@@ -883,14 +883,24 @@ namespace grapher.DesktopSens.Models
                 if (anchors.Count == 0) anchors = null;
             }
 
+            // Exact per-node frozen factors are persisted on the profile.
+            // These constraints supersede historical soft anchors.
+            double[] frozenNodes = null;
+            if (profile.FrozenSampleLutNodeFactorsByAngleZone != null &&
+                profile.FrozenSampleLutNodeFactorsByAngleZone.TryGetValue(angleZone, out var persistedFrozen) &&
+                persistedFrozen != null &&
+                persistedFrozen.Length == DesktopSensConstants.SampleLutDefaultNodes)
+                frozenNodes = (double[])persistedFrozen.Clone();
+
             SampleLutFitter.FitResult fit = SampleLutFitter.Fit(
                 eligible,
-                anchors,
+                null,
                 DesktopSensConstants.SampleLutDefaultNodes,
                 includeYellowCells: true,
                 trialWeights: trialWeights,
                 targetScale: 1.0,
-                targetScales: targetScales);
+                targetScales: targetScales,
+                fixedNodeFactors: frozenNodes);
             if (fit == null || !fit.IsValid)
             {
                 DesktopSensLog.Warn(
@@ -902,16 +912,18 @@ namespace grapher.DesktopSens.Models
 
             var builtPoints = SampleLutFitter.ToLutPoints(fit);
 
-            // NEW (Model v6, per-point isolation): persist the freshly-built
-            // LUT points so the next build sees them as anchors. Only green
-            // cells (Verified + PrecisionVerified) contribute to the anchor
-            // set — yellow-cell data is allowed to drift between fits so a
-            // noisy yellow trial cannot pin the curve permanently.
-            if (profile.LastBuiltLutPointsByAngleZone == null)
-                profile.LastBuiltLutPointsByAngleZone = new Dictionary<int, List<LutPoint>>();
-            if (profile.LastBuiltLutBaseFactorByAngleZone == null)
-                profile.LastBuiltLutBaseFactorByAngleZone = new Dictionary<int, double>();
-            var greenSpeedsByCell = new Dictionary<int, List<double>>();
+            // Freeze node values at the moment cells are green. Existing
+            // frozen values are never refreshed from a later fit. A newly
+            // green cell owns the nodes up to its accepted-trial median speed.
+            if (profile.FrozenSampleLutNodeFactorsByAngleZone == null)
+                profile.FrozenSampleLutNodeFactorsByAngleZone =
+                    new Dictionary<int, double[]>();
+            double[] frozen = profile.FrozenSampleLutNodeFactorsByAngleZone.TryGetValue(angleZone, out var stored)
+                && stored != null && stored.Length == fit.NodeFactors.Length
+                    ? (double[])stored.Clone()
+                    : CreateFreeNodeArray(fit.NodeFactors.Length);
+
+            var greenMedianSpeedByCell = new Dictionary<int, double>();
             foreach (var trial in eligible)
             {
                 int cellIndex = DesktopSensProfile.GetCellIndex(angleZone, trial.DistanceZoneIndex);
@@ -922,43 +934,47 @@ namespace grapher.DesktopSens.Models
                     !IsFinite(trial.DurationMs) || trial.DurationMs <= 0.0) continue;
                 double speed = trial.FlickDistanceCm * 1000.0 / trial.DurationMs;
                 if (!IsFinite(speed) || speed <= 0.0) continue;
-                if (!greenSpeedsByCell.TryGetValue(cellIndex, out var cellSpeeds))
+                if (!greenMedianSpeedByCell.TryGetValue(cellIndex, out double current) || speed > current)
+                    greenMedianSpeedByCell[cellIndex] = speed;
+            }
+
+            foreach (var cell in greenMedianSpeedByCell)
+            {
+                // Keep per-cell speed ownership deterministic; freeze only
+                // nodes at/below this green cell's speed coverage.
+                double maxSpeed = cell.Value;
+                for (int node = 0; node < fit.NodeSpeedCmPerSec.Length; node++)
                 {
-                    cellSpeeds = new List<double>();
-                    greenSpeedsByCell[cellIndex] = cellSpeeds;
+                    if (fit.NodeSpeedCmPerSec[node] > maxSpeed) continue;
+                    if (!IsFinite(frozen[node]) || frozen[node] <= 0.0)
+                    {
+                        frozen[node] = fit.NodeFactors[node];
+                        DesktopSensLog.Info("SampleLut freeze: angleZone=" + angleZone +
+                            " cellIndex=" + cell.Key + " node=" + node +
+                            " speed=" + fit.NodeSpeedCmPerSec[node].ToString("0.###") +
+                            " factor=" + frozen[node].ToString("0.########"));
+                    }
                 }
-                cellSpeeds.Add(speed);
             }
+            profile.FrozenSampleLutNodeFactorsByAngleZone[angleZone] = frozen;
 
-            var greenAnchors = new List<LutPoint>();
-            foreach (var pair in greenSpeedsByCell)
-            {
-                // One median-speed anchor per verified cell prevents cells
-                // with more recorded attempts from receiving extra anchor
-                // weight merely because they have more trials.
-                List<double> cellSpeeds = pair.Value;
-                cellSpeeds.Sort();
-                int mid = cellSpeeds.Count / 2;
-                double speed = cellSpeeds.Count % 2 == 0
-                    ? (cellSpeeds[mid - 1] + cellSpeeds[mid]) * 0.5
-                    : cellSpeeds[mid];
-
-                // Anchor the replacement LUT's actual fitted value,
-                // not CellAccelerationFactor (which is only the residual
-                // correction relative to the previously active LUT).
-                double factor = EvaluateLutPoints(builtPoints, speed);
-                if (IsFinite(factor) && factor > 0.0)
-                    greenAnchors.Add(new LutPoint(speed, factor, 1.0));
-            }
-            // If no green cells are present yet, keep the previously stored
-            // anchors (they will be overwritten once a cell turns green).
-            if (greenAnchors.Count > 0)
-            {
-                profile.LastBuiltLutPointsByAngleZone[angleZone] = greenAnchors;
-                profile.LastBuiltLutBaseFactorByAngleZone[angleZone] = targetBaseFactor;
-            }
+            // Maintain the legacy anchor cache for compatibility only; it is
+            // no longer an input to the sample-fit solver.
+            if (profile.LastBuiltLutPointsByAngleZone == null)
+                profile.LastBuiltLutPointsByAngleZone = new Dictionary<int, List<LutPoint>>();
+            if (profile.LastBuiltLutBaseFactorByAngleZone == null)
+                profile.LastBuiltLutBaseFactorByAngleZone = new Dictionary<int, double>();
+            profile.LastBuiltLutPointsByAngleZone[angleZone] = builtPoints;
+            profile.LastBuiltLutBaseFactorByAngleZone[angleZone] = targetBaseFactor;
 
             return builtPoints;
+        }
+
+        private static double[] CreateFreeNodeArray(int count)
+        {
+            var values = new double[count];
+            for (int i = 0; i < count; i++) values[i] = double.NaN;
+            return values;
         }
 
         private static double EvaluateLutPoints(IList<LutPoint> points, double speed)
