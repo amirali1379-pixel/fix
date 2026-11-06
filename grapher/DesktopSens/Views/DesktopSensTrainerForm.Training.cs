@@ -2013,6 +2013,18 @@ namespace grapher.DesktopSens.Views
                 wasVerifiedBefore != isVerifiedNow ||
                 wasFirstRoundBefore != isFirstRoundNow ||
                 !string.Equals(verifiedSessionBefore, verifiedSessionNow, StringComparison.Ordinal);
+
+            // A previously green cell that loses verification no longer owns
+            // its frozen LUT segment. Release this cell's nodes and every
+            // higher-speed dependent node before the next sample-fit build.
+            if (wasVerifiedBefore && !isVerifiedNow)
+            {
+                DesktopSensProfileMerger.UnfreezeSampleLutFromCell(
+                    _profile, angleZone, _selectedDistanceZone);
+                CalibrationResidualCache.Clear(_profile);
+                DesktopSensLog.Info("SampleLut unfreeze on green-to-non-green transition: angleZone=" +
+                    angleZone + " distanceZone=" + _selectedDistanceZone);
+            }
             // Persist every accepted training sample, not only color changes:
             // a crash must not discard the first-round sample history or the
             // recalculated per-cell factors needed by the next chain step.
