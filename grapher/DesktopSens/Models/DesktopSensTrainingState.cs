@@ -1639,6 +1639,9 @@ namespace grapher.DesktopSens.Models
                 profile.CellTrainingStates, angleZoneIndex, distanceZoneIndex);
             DesktopSensProfileMerger.UnfreezeSampleLutFromCell(
                 profile, angleZoneIndex, distanceZoneIndex);
+            CalibrationResidualCache.Clear(profile);
+            DesktopSensLog.Info("Profile-aware reset of cell: angleZone=" +
+                angleZoneIndex + " distanceZone=" + distanceZoneIndex);
             return removed;
         }
 
