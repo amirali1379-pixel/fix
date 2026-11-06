@@ -2239,6 +2239,21 @@ namespace grapher.DesktopSens.Views
                             profile.ModelVersion < DesktopSensConstants.CurrentModelVersion)
                         {
                             int previousModelVersion = profile.ModelVersion;
+                            // Model v11 introduces persisted sample-fit frozen
+                            // nodes. Legacy green cells are frozen at their
+                            // first sample-fit build from the historical accepted
+                            // raw trials; the fit may make a one-time migration
+                            // adjustment, after which those nodes remain exact.
+                            if (previousModelVersion < 11)
+                            {
+                                if (profile.FrozenSampleLutNodeFactorsByAngleZone == null)
+                                    profile.FrozenSampleLutNodeFactorsByAngleZone =
+                                        new Dictionary<int, double[]>();
+                                DesktopSensLog.Warn(
+                                    "DesktopSens model v11 migration: pre-existing green cells will " +
+                                    "freeze from their historical trials on first sample-fit LUT build.");
+                                CalibrationResidualCache.Clear(profile);
+                            }
                             // Model v8 stores the Base Sens factor alongside each
                             // sample-fit anchor. Earlier versions cannot reliably
                             // renormalize anchors after a Base Sens change, so discard
