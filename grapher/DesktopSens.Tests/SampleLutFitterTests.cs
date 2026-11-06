@@ -375,6 +375,24 @@ namespace grapher.DesktopSens.Tests
                 BitConverter.DoubleToInt64Bits(fit.NodeFactors[3]));
         }
 
+        [Fact]
+        public void UnfreezeFromCell_ReleasesThatAndHigherNodes()
+        {
+            var profile = new DesktopSensProfile();
+            var frozen = new double[DesktopSensConstants.SampleLutDefaultNodes];
+            for (int i = 0; i < frozen.Length; i++) frozen[i] = 1.25;
+            profile.FrozenSampleLutNodeFactorsByAngleZone[0] = frozen;
+            var trial = MakeSyntheticTrial(40, 5.0, 5.0, 4.0);
+            trial.AngleZoneIndex = 0;
+            trial.DistanceZoneIndex = 0;
+            profile.Trials = new List<DesktopSensTrial> { trial };
+
+            Assert.True(DesktopSensProfileMerger.UnfreezeSampleLutFromCell(profile, 0, 0));
+            var result = profile.FrozenSampleLutNodeFactorsByAngleZone[0];
+            Assert.True(double.IsNaN(result[result.Length - 1]));
+            Assert.True(double.IsNaN(result[0]) || result[0] == 1.25);
+        }
+
         private static DesktopSensTrial MakeSyntheticTrial(
             double speedCountsPerSec, double targetCm, double neededCm, double flickCm)
         {
