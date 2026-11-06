@@ -1001,18 +1001,22 @@ namespace grapher.DesktopSens.Models
                 return false;
 
             var speeds = new List<double>();
+            var previousZoneSpeeds = new List<double>();
             if (profile.Trials != null)
             {
                 foreach (var trial in profile.Trials)
                 {
                     if (trial == null || trial.IsEvaluationOnly || trial.IsSessionAnchor ||
                         trial.IsCalibrationExcluded || trial.WasRejected ||
-                        trial.AngleZoneIndex != angleZone || trial.DistanceZoneIndex != distanceZone ||
+                        trial.AngleZoneIndex != angleZone ||
                         !IsFinite(trial.FlickDistanceCm) || trial.FlickDistanceCm <= 0.0 ||
                         !IsFinite(trial.DurationMs) || trial.DurationMs <= 0.0)
                         continue;
                     double speed = trial.FlickDistanceCm * 1000.0 / trial.DurationMs;
-                    if (IsFinite(speed) && speed > 0.0) speeds.Add(speed);
+                    if (!IsFinite(speed) || speed <= 0.0) continue;
+                    if (trial.DistanceZoneIndex == distanceZone) speeds.Add(speed);
+                    if (distanceZone > 0 && trial.DistanceZoneIndex == distanceZone - 1)
+                        previousZoneSpeeds.Add(speed);
                 }
             }
             if (speeds.Count == 0)
@@ -1025,6 +1029,18 @@ namespace grapher.DesktopSens.Models
             int mid = speeds.Count / 2;
             double cellSpeed = speeds.Count % 2 == 0
                 ? (speeds[mid - 1] + speeds[mid]) * 0.5 : speeds[mid];
+            double unfreezeFromSpeed = DesktopSensConstants.SampleLutMinSpeedCmPerSec;
+            if (distanceZone > 0 && previousZoneSpeeds.Count > 0)
+            {
+                previousZoneSpeeds.Sort();
+                int prevMid = previousZoneSpeeds.Count / 2;
+                double previousMedian = previousZoneSpeeds.Count % 2 == 0
+                    ? (previousZoneSpeeds[prevMid - 1] + previousZoneSpeeds[prevMid]) * 0.5
+                    : previousZoneSpeeds[prevMid];
+                unfreezeFromSpeed = (previousMedian + cellSpeed) * 0.5;
+            }
+            else if (distanceZone > 0)
+                unfreezeFromSpeed = cellSpeed;
 
             double minNodeSpeed = DesktopSensConstants.SampleLutMinSpeedCmPerSec;
             double maxNodeSpeed = DesktopSensConstants.SampleLutMaxSpeedCmPerSec;
@@ -1035,7 +1051,7 @@ namespace grapher.DesktopSens.Models
             {
                 double t = (double)node / (frozen.Length - 1);
                 double nodeSpeed = Math.Exp(logMin + (logMax - logMin) * t);
-                if (nodeSpeed < cellSpeed) continue;
+                if (nodeSpeed < unfreezeFromSpeed) continue;
                 if (IsFinite(frozen[node]) && frozen[node] > 0.0)
                 {
                     DesktopSensLog.Info("SampleLut unfreeze: angleZone=" + angleZone +
