@@ -789,6 +789,16 @@ namespace grapher.DesktopSens.Views
                 else
                     _profile.CellTrainingStates.Clear();
 
+                // This is an explicit full-training reset. Frozen LUT node
+                // ownership and its build caches must be reset with cell state.
+                if (_profile.FrozenSampleLutNodeFactorsByAngleZone != null)
+                    _profile.FrozenSampleLutNodeFactorsByAngleZone.Clear();
+                if (_profile.LastBuiltLutPointsByAngleZone != null)
+                    _profile.LastBuiltLutPointsByAngleZone.Clear();
+                if (_profile.LastBuiltLutBaseFactorByAngleZone != null)
+                    _profile.LastBuiltLutBaseFactorByAngleZone.Clear();
+                CalibrationResidualCache.Clear(_profile);
+
                 if (_profile.Trials == null)
                     _profile.Trials = new List<DesktopSensTrial>();
                 else
