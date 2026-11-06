@@ -392,7 +392,7 @@ namespace grapher.DesktopSens.Tests
             Assert.True(DesktopSensTrainingState.ResetCell(profile, 0, 0));
             var result = profile.FrozenSampleLutNodeFactorsByAngleZone[0];
             for (int i = 0; i < result.Length; i++)
-                Assert.Equal(0.0, result[i]);
+                Assert.True(result[i] == 0.0,
                     "Recalibrating the first distance zone should release every node.");
         }
 
