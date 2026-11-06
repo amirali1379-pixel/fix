@@ -57,10 +57,10 @@ namespace grapher.DesktopSens.Models
         /// from a previously-built green-cell LUT. Anchors pin the nearest node
         /// to its previous factor with a high weight so that adding a new
         /// green cell cannot rewrite the curve at speeds the user already
-        /// verified. This is the per-point isolation guarantee described in
-        /// the LUT-fix README: previously-verified LUT points survive a
-        /// re-fit and only the unverified region of the curve is free to
-        /// move.
+        /// verified. This overload retains the historical soft-anchor
+        /// parameter for source compatibility. The production sample-fit
+        /// merger now uses the weighted overload with fixedNodeFactors,
+        /// which enforces frozen nodes exactly; it does not pass soft anchors.
         /// </summary>
         public static FitResult Fit(
             IList<DesktopSensTrial> trials,
@@ -163,15 +163,11 @@ namespace grapher.DesktopSens.Models
                 normal[i + 1, i] -= smooth;
             }
 
-            // NEW (Model v6, per-point isolation): anchor nodes to their
-            // previously-built factors. Each anchor is a (speed, factor)
-            // pair from a previously-verified LUT point. We pin the nearest
-            // node to that factor with a high weight so adding a new green
-            // cell cannot rewrite the curve at speeds the user already
-            // verified — only the unverified region of the curve is free
-            // to move. This implements the isolation guarantee described in
-            // README_LUT_FIX_V2.md: previously-built LUT points survive a
-            // re-fit instead of being silently overwritten.
+            // Historical optional soft-anchor compatibility path. The
+            // DesktopSensProfileMerger sample-fit path passes anchors=null
+            // and uses fixedNodeFactors below instead, so production green
+            // nodes are protected by exact constraints rather than this
+            // penalty-based approximation.
             if (anchors != null && anchors.Count > 0)
             {
                 double anchorWeight = DesktopSensConstants.SampleLutAnchorWeight;
