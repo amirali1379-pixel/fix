@@ -1059,7 +1059,7 @@ namespace grapher.DesktopSens.Models
                         " speed=" + nodeSpeed.ToString("0.###"));
                     unfrozen++;
                 }
-                frozen[node] = double.NaN;
+                frozen[node] = 0.0;
             }
             profile.FrozenSampleLutNodeFactorsByAngleZone[angleZone] = frozen;
             return unfrozen > 0;
@@ -1068,7 +1068,7 @@ namespace grapher.DesktopSens.Models
         private static double[] CreateFreeNodeArray(int count)
         {
             var values = new double[count];
-            for (int i = 0; i < count; i++) values[i] = double.NaN;
+            for (int i = 0; i < count; i++) values[i] = 0.0;
             return values;
         }
 
