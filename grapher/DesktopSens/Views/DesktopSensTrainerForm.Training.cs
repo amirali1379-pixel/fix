@@ -2015,6 +2015,7 @@ namespace grapher.DesktopSens.Views
             }
             bool trainingStateChanged =
                 wasVerifiedBefore != isVerifiedNow ||
+                wasPrecisionVerifiedBefore != isPrecisionVerifiedNow ||
                 wasFirstRoundBefore != isFirstRoundNow ||
                 !string.Equals(verifiedSessionBefore, verifiedSessionNow, StringComparison.Ordinal);
 
