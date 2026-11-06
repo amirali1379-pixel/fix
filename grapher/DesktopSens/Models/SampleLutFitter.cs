@@ -295,6 +295,19 @@ namespace grapher.DesktopSens.Models
                     solution[i] = DesktopSensConstants.MaximumCalibrationFactor;
             }
 
+            // Restore fixed values after the safety clamp as well. This
+            // makes frozen nodes bitwise identical to the profile snapshot,
+            // independent of pivoting, rounding, or clamp logic.
+            if (fixedNodeFactors != null && fixedNodeFactors.Count == n)
+            {
+                for (int i = 0; i < n; i++)
+                {
+                    double fixedFactor = fixedNodeFactors[i];
+                    if (IsFinite(fixedFactor) && fixedFactor > 0.0)
+                        solution[i] = fixedFactor;
+                }
+            }
+
             // Compute RMSE for diagnostics.
             double sumSq = 0.0;
             double errorWeight = 0.0;
