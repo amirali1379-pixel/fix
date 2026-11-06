@@ -84,7 +84,8 @@ namespace grapher.DesktopSens.Models
             bool includeYellowCells,
             IList<double> trialWeights,
             double targetScale,
-            IList<double> targetScales = null)
+            IList<double> targetScales = null,
+            IList<double> fixedNodeFactors = null)
         {
             var result = new FitResult
             {
@@ -104,11 +105,9 @@ namespace grapher.DesktopSens.Models
             if (nodeCount > DesktopSensConstants.SampleLutMaxNodes)
                 nodeCount = DesktopSensConstants.SampleLutMaxNodes;
 
-            // Pre-pass: determine the actual speed range covered by the
-            // accepted trials so the nodes span the data rather than the
-            // global default range.
-            double minSpeed = double.MaxValue;
-            double maxSpeed = double.MinValue;
+            // Fixed logarithmic node grid. Never derive node positions from
+            // the current trial set: adding a higher-speed zone must not move
+            // any previously calibrated node.
             int usableTrialCount = 0;
             for (int trialIndex = 0; trialIndex < trials.Count; trialIndex++)
             {
@@ -118,28 +117,16 @@ namespace grapher.DesktopSens.Models
                 double perTrialScale = targetScale * GetTargetScale(targetScales, trialIndex);
                 List<(double speed, double displacement)> samples =
                     ExtractProjectedSamples(trial, out _, perTrialScale);
-                if (samples.Count == 0) continue;
-                foreach (var s in samples)
-                {
-                    if (s.speed < minSpeed) minSpeed = s.speed;
-                    if (s.speed > maxSpeed) maxSpeed = s.speed;
-                }
-                usableTrialCount++;
+                if (samples.Count > 0) usableTrialCount++;
             }
-            if (usableTrialCount == 0 || !IsFinite(minSpeed) || !IsFinite(maxSpeed))
+            if (usableTrialCount == 0)
             {
                 result.FailureReason = "no usable trial samples";
                 return result;
             }
 
-            // Expand the observed range with a margin so the bookends do
-            // not sit on the very edge of the data.
-            minSpeed = Math.Max(minSpeed * 0.5, DesktopSensConstants.SampleLutMinSpeedCmPerSec);
-            maxSpeed = Math.Min(maxSpeed * 2.0, DesktopSensConstants.SampleLutMaxSpeedCmPerSec);
-            if (maxSpeed <= minSpeed * 1.1)
-                maxSpeed = minSpeed * 2.0;
-
-            // Log-spaced nodes over [minSpeed, maxSpeed].
+            double minSpeed = DesktopSensConstants.SampleLutMinSpeedCmPerSec;
+            double maxSpeed = DesktopSensConstants.SampleLutMaxSpeedCmPerSec;
             double[] nodeSpeeds = new double[nodeCount];
             double logMin = Math.Log(minSpeed);
             double logMax = Math.Log(maxSpeed);
@@ -263,6 +250,27 @@ namespace grapher.DesktopSens.Models
                     for (int j = 0; j < n; j++)
                         if (Math.Abs(row[j]) >= 1e-12)
                             normal[i, j] += weight * row[i] * row[j];
+                }
+            }
+
+            // Exact frozen-node constraints. Eliminate frozen variables from
+            // the free-node system instead of using a large penalty weight;
+            // this guarantees the returned frozen factors are unchanged.
+            if (fixedNodeFactors != null && fixedNodeFactors.Count == n)
+            {
+                for (int fixedIndex = 0; fixedIndex < n; fixedIndex++)
+                {
+                    double fixedFactor = fixedNodeFactors[fixedIndex];
+                    if (!IsFinite(fixedFactor) || fixedFactor <= 0.0) continue;
+                    for (int freeIndex = 0; freeIndex < n; freeIndex++)
+                    {
+                        if (freeIndex == fixedIndex) continue;
+                        rhs[freeIndex] -= normal[freeIndex, fixedIndex] * fixedFactor;
+                        normal[freeIndex, fixedIndex] = 0.0;
+                        normal[fixedIndex, freeIndex] = 0.0;
+                    }
+                    normal[fixedIndex, fixedIndex] = 1.0;
+                    rhs[fixedIndex] = fixedFactor;
                 }
             }
 
