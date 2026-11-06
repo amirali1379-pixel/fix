@@ -1395,9 +1395,18 @@ namespace grapher.DesktopSens.Views
                 if (activeProfile != null && deltaTicks > 0 && sampleCmPerCount > 0.0)
                 {
                     double dtSec = deltaTicks / (double)Stopwatch.Frequency;
-                    double speedCmPerSec = Math.Sqrt(
-                        currSample.DX * (double)currSample.DX +
-                        currSample.DY * (double)currSample.DY) * sampleCmPerCount /
+                    // The live RawAccel engine computes velocity from
+                    // the 2-D vector magnitude. For this calibration snapshot,
+                    // use target-axis projected velocity to match
+                    // SampleLutFitter.ExtractProjectedSamples: the LUT being
+                    // fitted describes displacement along this target axis.
+                    // This is an axis-calibration approximation, not a claim
+                    // that the runtime driver's physical speed metric changed.
+                    double axisX = Math.Cos(targetRadForSampleLut);
+                    double axisY = Math.Sin(targetRadForSampleLut);
+                    double projectedCounts = currSample.DX * axisX +
+                        currSample.DY * axisY;
+                    double speedCmPerSec = Math.Abs(projectedCounts) * sampleCmPerCount /
                         Math.Max(1e-9, dtSec);
                     if (IsFiniteValue(speedCmPerSec) && speedCmPerSec > 0.0)
                     {
