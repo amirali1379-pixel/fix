@@ -382,12 +382,14 @@ namespace grapher.DesktopSens.Tests
             var frozen = new double[DesktopSensConstants.SampleLutDefaultNodes];
             for (int i = 0; i < frozen.Length; i++) frozen[i] = 1.25;
             profile.FrozenSampleLutNodeFactorsByAngleZone[0] = frozen;
+            profile.CellTrainingStates = new Dictionary<int, TrainingCellState>();
+            profile.CellTrainingStates[DesktopSensProfile.GetCellIndex(0, 0)] = new TrainingCellState();
             var trial = MakeSyntheticTrial(40, 5.0, 5.0, 4.0);
             trial.AngleZoneIndex = 0;
             trial.DistanceZoneIndex = 0;
             profile.Trials = new List<DesktopSensTrial> { trial };
 
-            Assert.True(DesktopSensProfileMerger.UnfreezeSampleLutFromCell(profile, 0, 0));
+            Assert.True(DesktopSensTrainingState.ResetCell(profile, 0, 0));
             var result = profile.FrozenSampleLutNodeFactorsByAngleZone[0];
             for (int i = 0; i < result.Length; i++)
                 Assert.Equal(0.0, result[i]);
