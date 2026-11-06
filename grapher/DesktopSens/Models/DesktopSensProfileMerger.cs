@@ -1091,7 +1091,6 @@ namespace grapher.DesktopSens.Models
             {
                 var sample = trial.RawSamples[i];
                 long deltaTicks = sample.Timestamp - previousTimestamp;
-                previousTimestamp = sample.Timestamp;
                 if (deltaTicks <= 0) continue;
                 double dtSec = deltaTicks / (double)Stopwatch.Frequency;
                 double projectedCounts = sample.DX * axisX + sample.DY * axisY;
@@ -1101,6 +1100,8 @@ namespace grapher.DesktopSens.Models
                 if (IsFinite(speed) && speed > 0.0 &&
                     IsFinite(weight) && weight > 0.0)
                     result.Add((speed, weight));
+                // Match ExtractProjectedSamples' timestamp progression.
+                previousTimestamp = sample.Timestamp;
             }
             return result;
         }
