@@ -930,6 +930,7 @@ namespace grapher.DesktopSens.Models
                 accumulated.AddRange(cellSamples);
             }
 
+            int newlyFrozenNodeCount = 0;
             foreach (var cell in greenSpeedSamplesByCell)
             {
                 // Weighted P90 of instantaneous target-axis speeds. Weights
@@ -957,15 +958,15 @@ namespace grapher.DesktopSens.Models
                     if (!IsFinite(frozen[node]) || frozen[node] <= 0.0)
                     {
                         frozen[node] = fit.NodeFactors[node];
-                        DesktopSensLog.Info("SampleLut freeze: angleZone=" + angleZone +
-                            " cellIndex=" + cell.Key + " node=" + node +
-                            " speed=" + fit.NodeSpeedCmPerSec[node].ToString("0.###") +
-                            " factor=" + frozen[node].ToString("0.########") +
-                            " weightedP90=" + p90Speed.ToString("0.###"));
+                        newlyFrozenNodeCount++;
                     }
                 }
             }
             profile.FrozenSampleLutNodeFactorsByAngleZone[angleZone] = frozen;
+            if (newlyFrozenNodeCount > 0)
+                DesktopSensLog.Info("SampleLut freeze completed: angleZone=" + angleZone +
+                    " greenCellsConsidered=" + greenSpeedSamplesByCell.Count +
+                    " newlyFrozenNodes=" + newlyFrozenNodeCount);
 
             // Maintain the legacy anchor cache for compatibility only; it is
             // no longer an input to the sample-fit solver.
@@ -1060,14 +1061,8 @@ namespace grapher.DesktopSens.Models
             for (int node = 0; node < frozen.Length; node++)
             {
                 if (node < firstNodeToUnfreeze) continue;
-                double nodeSpeed = GetFixedNodeSpeed(node, frozen.Length);
                 if (IsFinite(frozen[node]) && frozen[node] > 0.0)
-                {
-                    DesktopSensLog.Info("SampleLut unfreeze: angleZone=" + angleZone +
-                        " distanceZone=" + distanceZone + " node=" + node +
-                        " speed=" + nodeSpeed.ToString("0.###"));
                     unfrozen++;
-                }
                 frozen[node] = 0.0;
             }
             profile.FrozenSampleLutNodeFactorsByAngleZone[angleZone] = frozen;
