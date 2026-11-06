@@ -1019,9 +1019,14 @@ namespace grapher.DesktopSens.Models
             }
             if (currentCellSamples.Count == 0)
             {
-                DesktopSensLog.Warn("SampleLut unfreeze requested but no speed samples found: angleZone=" +
+                // A trial-deletion/reset path may remove the cell's samples
+                // before it asks for unfreeze. The previous cell's P90 still
+                // identifies the ownership boundary; if unavailable, release
+                // conservatively from node zero rather than retaining stale
+                // frozen constraints.
+                DesktopSensLog.Warn("SampleLut unfreeze has no current-cell speed samples; " +
+                    "using previous-cell boundary or releasing all nodes: angleZone=" +
                     angleZone + " distanceZone=" + distanceZone);
-                return false;
             }
 
             // Node ownership follows each green cell's weighted-P90 ceil
