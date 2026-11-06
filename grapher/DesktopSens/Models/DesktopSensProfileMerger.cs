@@ -924,6 +924,7 @@ namespace grapher.DesktopSens.Models
                     : CreateFreeNodeArray(fit.NodeFactors.Length);
 
             var greenMedianSpeedByCell = new Dictionary<int, double>();
+            var greenSpeedsForFreeze = new Dictionary<int, List<double>>();
             foreach (var trial in eligible)
             {
                 int cellIndex = DesktopSensProfile.GetCellIndex(angleZone, trial.DistanceZoneIndex);
@@ -934,15 +935,32 @@ namespace grapher.DesktopSens.Models
                     !IsFinite(trial.DurationMs) || trial.DurationMs <= 0.0) continue;
                 double speed = trial.FlickDistanceCm * 1000.0 / trial.DurationMs;
                 if (!IsFinite(speed) || speed <= 0.0) continue;
-                if (!greenMedianSpeedByCell.TryGetValue(cellIndex, out double current) || speed > current)
+                if (!greenMedianSpeedByCell.TryGetValue(cellIndex, out double current))
                     greenMedianSpeedByCell[cellIndex] = speed;
+                else
+                {
+                    // Keep the complete sample set for a true median below.
+                    if (!greenSpeedsForFreeze.TryGetValue(cellIndex, out var speeds))
+                    {
+                        speeds = new List<double> { current };
+                        greenSpeedsForFreeze[cellIndex] = speeds;
+                    }
+                    speeds.Add(speed);
+                }
             }
 
             foreach (var cell in greenMedianSpeedByCell)
             {
-                // Keep per-cell speed ownership deterministic; freeze only
-                // nodes at/below this green cell's speed coverage.
-                double maxSpeed = cell.Value;
+                // Use median accepted trial speed, not the max, to avoid
+                // prematurely freezing nodes from a high-speed outlier.
+                List<double> cellSpeeds;
+                if (greenSpeedsForFreeze.TryGetValue(cell.Key, out cellSpeeds))
+                    cellSpeeds.Sort();
+                double maxSpeed = cellSpeeds != null && cellSpeeds.Count > 0
+                    ? (cellSpeeds.Count % 2 == 0
+                        ? (cellSpeeds[cellSpeeds.Count / 2 - 1] + cellSpeeds[cellSpeeds.Count / 2]) * 0.5
+                        : cellSpeeds[cellSpeeds.Count / 2])
+                    : cell.Value;
                 for (int node = 0; node < fit.NodeSpeedCmPerSec.Length; node++)
                 {
                     if (fit.NodeSpeedCmPerSec[node] > maxSpeed) continue;
@@ -968,6 +986,67 @@ namespace grapher.DesktopSens.Models
             profile.LastBuiltLutBaseFactorByAngleZone[angleZone] = targetBaseFactor;
 
             return builtPoints;
+        }
+
+        /// <summary>
+        /// Explicitly reopen a cell's LUT ownership and every later node.
+        /// Call when a previously-green cell is intentionally recalibrated.
+        /// </summary>
+        public static bool UnfreezeSampleLutFromCell(
+            DesktopSensProfile profile, int angleZone, int distanceZone)
+        {
+            if (profile == null || profile.FrozenSampleLutNodeFactorsByAngleZone == null ||
+                !profile.FrozenSampleLutNodeFactorsByAngleZone.TryGetValue(angleZone, out var frozen) ||
+                frozen == null || frozen.Length != DesktopSensConstants.SampleLutDefaultNodes)
+                return false;
+
+            var speeds = new List<double>();
+            if (profile.Trials != null)
+            {
+                foreach (var trial in profile.Trials)
+                {
+                    if (trial == null || trial.IsEvaluationOnly || trial.IsSessionAnchor ||
+                        trial.IsCalibrationExcluded || trial.WasRejected ||
+                        trial.AngleZoneIndex != angleZone || trial.DistanceZoneIndex != distanceZone ||
+                        !IsFinite(trial.FlickDistanceCm) || trial.FlickDistanceCm <= 0.0 ||
+                        !IsFinite(trial.DurationMs) || trial.DurationMs <= 0.0)
+                        continue;
+                    double speed = trial.FlickDistanceCm * 1000.0 / trial.DurationMs;
+                    if (IsFinite(speed) && speed > 0.0) speeds.Add(speed);
+                }
+            }
+            if (speeds.Count == 0)
+            {
+                DesktopSensLog.Warn("SampleLut unfreeze requested but no speed samples found: angleZone=" +
+                    angleZone + " distanceZone=" + distanceZone);
+                return false;
+            }
+            speeds.Sort();
+            int mid = speeds.Count / 2;
+            double cellSpeed = speeds.Count % 2 == 0
+                ? (speeds[mid - 1] + speeds[mid]) * 0.5 : speeds[mid];
+
+            double minNodeSpeed = DesktopSensConstants.SampleLutMinSpeedCmPerSec;
+            double maxNodeSpeed = DesktopSensConstants.SampleLutMaxSpeedCmPerSec;
+            double logMin = Math.Log(minNodeSpeed);
+            double logMax = Math.Log(maxNodeSpeed);
+            int unfrozen = 0;
+            for (int node = 0; node < frozen.Length; node++)
+            {
+                double t = (double)node / (frozen.Length - 1);
+                double nodeSpeed = Math.Exp(logMin + (logMax - logMin) * t);
+                if (nodeSpeed < cellSpeed) continue;
+                if (IsFinite(frozen[node]) && frozen[node] > 0.0)
+                {
+                    DesktopSensLog.Info("SampleLut unfreeze: angleZone=" + angleZone +
+                        " distanceZone=" + distanceZone + " node=" + node +
+                        " speed=" + nodeSpeed.ToString("0.###"));
+                    unfrozen++;
+                }
+                frozen[node] = double.NaN;
+            }
+            profile.FrozenSampleLutNodeFactorsByAngleZone[angleZone] = frozen;
+            return unfrozen > 0;
         }
 
         private static double[] CreateFreeNodeArray(int count)
