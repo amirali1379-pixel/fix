@@ -328,6 +328,53 @@ namespace grapher.DesktopSens.Tests
             return fit.NodeFactors[bestIdx];
         }
 
+        [Fact]
+        public void FixedNodeGrid_DoesNotMoveWhenHigherSpeedTrialsAreAdded()
+        {
+            var low = new List<DesktopSensTrial>
+            {
+                MakeSyntheticTrial(20, 5.0, 5.0, 4.0),
+                MakeSyntheticTrial(40, 10.0, 10.0, 8.0)
+            };
+            var high = new List<DesktopSensTrial>(low)
+            {
+                MakeSyntheticTrial(160, 35.0, 35.0, 28.0)
+            };
+            var fitLow = SampleLutFitter.Fit(low);
+            var fitHigh = SampleLutFitter.Fit(high);
+            Assert.True(fitLow.IsValid, fitLow.FailureReason);
+            Assert.True(fitHigh.IsValid, fitHigh.FailureReason);
+            Assert.Equal(fitLow.NodeSpeedCmPerSec.Length, fitHigh.NodeSpeedCmPerSec.Length);
+            for (int i = 0; i < fitLow.NodeSpeedCmPerSec.Length; i++)
+                Assert.Equal(
+                    BitConverter.DoubleToInt64Bits(fitLow.NodeSpeedCmPerSec[i]),
+                    BitConverter.DoubleToInt64Bits(fitHigh.NodeSpeedCmPerSec[i]));
+        }
+
+        [Fact]
+        public void Fit_ExactFrozenNodeConstraint_PreservesFactorBitwise()
+        {
+            var trials = new List<DesktopSensTrial>
+            {
+                MakeSyntheticTrial(20, 5.0, 5.0, 4.0),
+                MakeSyntheticTrial(60, 15.0, 15.0, 12.0),
+                MakeSyntheticTrial(160, 35.0, 35.0, 28.0)
+            };
+            var frozen = new double[DesktopSensConstants.SampleLutDefaultNodes];
+            for (int i = 0; i < frozen.Length; i++) frozen[i] = double.NaN;
+            frozen[2] = 1.23456789012345;
+            frozen[3] = 0.87654321098765;
+
+            var fit = SampleLutFitter.Fit(
+                trials, null, DesktopSensConstants.SampleLutDefaultNodes,
+                true, null, 1.0, null, frozen);
+            Assert.True(fit.IsValid, fit.FailureReason);
+            Assert.Equal(BitConverter.DoubleToInt64Bits(frozen[2]),
+                BitConverter.DoubleToInt64Bits(fit.NodeFactors[2]));
+            Assert.Equal(BitConverter.DoubleToInt64Bits(frozen[3]),
+                BitConverter.DoubleToInt64Bits(fit.NodeFactors[3]));
+        }
+
         private static DesktopSensTrial MakeSyntheticTrial(
             double speedCountsPerSec, double targetCm, double neededCm, double flickCm)
         {
