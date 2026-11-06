@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.IO;
+using grapher.Models.Mouse;
 
 
 namespace grapher.DesktopSens.Models
