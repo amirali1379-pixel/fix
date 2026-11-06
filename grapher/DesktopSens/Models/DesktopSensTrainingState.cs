@@ -1626,6 +1626,23 @@ namespace grapher.DesktopSens.Models
         }
 
         /// <summary>
+        /// Profile-aware cell reset. Reopening an older cell releases that
+        /// cell's frozen LUT ownership and all downstream node constraints.
+        /// </summary>
+        public static bool ResetCell(
+            DesktopSensProfile profile,
+            int angleZoneIndex,
+            int distanceZoneIndex)
+        {
+            if (profile == null) return false;
+            bool removed = ResetCell(
+                profile.CellTrainingStates, angleZoneIndex, distanceZoneIndex);
+            DesktopSensProfileMerger.UnfreezeSampleLutFromCell(
+                profile, angleZoneIndex, distanceZoneIndex);
+            return removed;
+        }
+
+        /// <summary>
         /// Returns the next distance-zone index that is available for
         /// training on the given cardinal axis, or -1 if every cell on
         /// that axis is Verified.
