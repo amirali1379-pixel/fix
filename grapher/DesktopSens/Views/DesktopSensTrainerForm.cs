@@ -1376,6 +1376,40 @@ namespace grapher.DesktopSens.Views
                 HasAppliedLutFactor = hasAppliedLutFactor
             };
 
+            // Snapshot the active speed LUT at each raw input sample so
+            // residual reconstruction can replay the actual per-sample
+            // driver multiplier (rather than a single median-speed factor).
+            trial.AppliedLutFactorsByRawSample = new List<double>(trial.RawSamples.Count);
+            trial.AppliedLutFactorsByRawSample.Add(1.0);
+            double sampleCmPerCount = trial.EffectiveCpi > 0.0
+                ? DesktopSensConstants.InchesToCm / trial.EffectiveCpi : 0.0;
+            double targetRadForSampleLut = targetAngle * Math.PI / 180.0;
+            string sampleLutAxis = Math.Abs(Math.Cos(targetRadForSampleLut)) >=
+                Math.Abs(Math.Sin(targetRadForSampleLut)) ? "X" : "Y";
+            for (int sampleIndex = 1; sampleIndex < trial.RawSamples.Count; sampleIndex++)
+            {
+                MouseSample prevSample = trial.RawSamples[sampleIndex - 1];
+                MouseSample currSample = trial.RawSamples[sampleIndex];
+                long deltaTicks = currSample.Timestamp - prevSample.Timestamp;
+                double factorAtSample = 1.0;
+                if (activeProfile != null && deltaTicks > 0 && sampleCmPerCount > 0.0)
+                {
+                    double dtSec = deltaTicks / (double)Stopwatch.Frequency;
+                    double speedCmPerSec = Math.Sqrt(
+                        currSample.DX * (double)currSample.DX +
+                        currSample.DY * (double)currSample.DY) * sampleCmPerCount /
+                        Math.Max(1e-9, dtSec);
+                    if (IsFiniteValue(speedCmPerSec) && speedCmPerSec > 0.0)
+                    {
+                        double queried = RawAccelSettingsBridge.LookupActiveLutFactorFromProfile(
+                            activeProfile, speedCmPerSec, sampleLutAxis);
+                        if (IsFiniteValue(queried) && queried > 0.0)
+                            factorAtSample = queried;
+                    }
+                }
+                trial.AppliedLutFactorsByRawSample.Add(factorAtSample);
+            }
+
             // Preserve the capture-time residual for the training-state hit check.
             // DesktopSensCalibrator independently replays raw samples in
             // deterministic zone order on every calibration pass; it does
