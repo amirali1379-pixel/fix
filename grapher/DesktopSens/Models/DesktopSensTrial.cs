@@ -129,6 +129,9 @@ namespace grapher.DesktopSens.Models
         public double AppliedBaseFactor = 1.0;
         public double AppliedLutFactor = 1.0;
         public bool HasAppliedLutFactor;
+        // Per-raw-sample LUT factor snapshot, index-aligned with RawSamples.
+        // Empty on legacy trials; those continue to use AppliedLutFactor.
+        public List<double> AppliedLutFactorsByRawSample = new List<double>();
 
         public double DurationMs;
         public double PeakVelocityPxPerSec;
