@@ -427,7 +427,7 @@ namespace grapher.DesktopSens.Tests
             var frozenBefore = (double[])profile.FrozenSampleLutNodeFactorsByAngleZone[0].Clone();
             Assert.True(frozenBefore.Any(x => x > 0.0));
 
-            var zone1 = MakeSyntheticTrial(2.5, 10.0, 10.0, 10.0);
+            var zone1 = MakeSyntheticTrial(3.0, 10.0, 10.0, 10.0);
             zone1.AngleZoneIndex = 0;
             zone1.DistanceZoneIndex = 1;
             profile.Trials.Add(zone1);
