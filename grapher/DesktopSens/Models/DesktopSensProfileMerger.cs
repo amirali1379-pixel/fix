@@ -526,21 +526,20 @@ namespace grapher.DesktopSens.Models
                 dir.SuccessfulSamples = sum;
             }
 
-            // Build the LUT points ONLY from green (Verified +
-            // PrecisionVerified) cells. A cell that is yellow (calibrated
-            // but not yet precision-stable) or unobserved contributes NO
-            // point — so when a new cell goes green, it can only APPEND
-            // its point, never change any earlier point. This is the
-            // per-point isolation guarantee for the LUT path.
+            // Legacy median-speed LUT mode (UseSampleFitLut=false) uses
+            // only green (Verified + PrecisionVerified) cells. That legacy
+            // path's points are cell-derived; its isolation comments apply
+            // only to BuildLutPoints below.
             //
-            // The speed for each green cell is the MEDIAN of that cell's
-            // accepted-trial flick speeds (FlickDistanceCm / DurationMs *
-            // 1000), matching the formula in
-            // DesktopSensCalibrator.TryBuildCurveSample. The factor is
-            // the cell's CellAccelerationFactor (NOT the
-            // confidence-weighted blend used by AccelerationByDistanceZone
-            // — the LUT point represents the cell's actual calibrated
-            // factor; below/above the green range the applier uses 1.0).
+            // Sample-fit mode (UseSampleFitLut=true) also includes yellow
+            // trials at reduced weight, but verified green cell nodes are
+            // frozen by exact constraints and are never re-fitted. Its
+            // isolation guarantee is node-based, not a claim that the curve
+            // only appends points or that yellow trials are ignored.
+            //
+            // Legacy cell speed is the median accepted-trial mean flick speed
+            // (FlickDistanceCm / DurationMs * 1000), matching
+            // DesktopSensCalibrator.TryBuildCurveSample.
             //
             // NEW (Model v6): prefer the sample-fit LUT when the profile
             // enables it. The sample-fit path uses raw per-sample
