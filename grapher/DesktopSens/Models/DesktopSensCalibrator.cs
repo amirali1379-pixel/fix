@@ -783,9 +783,7 @@ namespace grapher.DesktopSens.Models
 
             double appliedBaseFactor = IsFinite(trial.AppliedBaseFactor) &&
                 trial.AppliedBaseFactor > 0.0 ? trial.AppliedBaseFactor : 1.0;
-            double appliedLutFactor = trial.HasAppliedLutFactor &&
-                IsFinite(trial.AppliedLutFactor) && trial.AppliedLutFactor > 0.0
-                    ? trial.AppliedLutFactor : 1.0;
+            double appliedLutFactor = ComputeSampleWeightedAppliedLutFactor(trial);
             double appliedOutputFactor = appliedBaseFactor * appliedLutFactor;
             if (!IsFinite(appliedOutputFactor) || appliedOutputFactor <= 0.0 ||
                 Math.Abs(appliedOutputFactor - 1.0) < 1e-12)
@@ -800,6 +798,38 @@ namespace grapher.DesktopSens.Models
                 return rawSignedError;
 
             return driverObserved - effectiveTargetCm;
+        }
+
+        private static double ComputeSampleWeightedAppliedLutFactor(DesktopSensTrial trial)
+        {
+            if (trial == null || trial.RawSamples == null ||
+                trial.AppliedLutFactorsByRawSample == null ||
+                trial.AppliedLutFactorsByRawSample.Count != trial.RawSamples.Count ||
+                trial.RawSamples.Count < 2)
+                return trial != null && trial.HasAppliedLutFactor &&
+                    IsFinite(trial.AppliedLutFactor) && trial.AppliedLutFactor > 0.0
+                        ? trial.AppliedLutFactor : 1.0;
+
+            double angleRad = trial.TargetAngleDegrees * Math.PI / 180.0;
+            double axisX = Math.Cos(angleRad);
+            double axisY = Math.Sin(angleRad);
+            double weightedDisplacement = 0.0;
+            double signedDisplacement = 0.0;
+            for (int i = 1; i < trial.RawSamples.Count; i++)
+            {
+                MouseSample sample = trial.RawSamples[i];
+                double displacement = (sample.DX * axisX + sample.DY * axisY);
+                double factor = trial.AppliedLutFactorsByRawSample[i];
+                if (!IsFinite(displacement) || !IsFinite(factor) || factor <= 0.0)
+                    continue;
+                weightedDisplacement += factor * displacement;
+                signedDisplacement += displacement;
+            }
+            if (!IsFinite(signedDisplacement) || Math.Abs(signedDisplacement) < 1e-9)
+                return trial.HasAppliedLutFactor && IsFinite(trial.AppliedLutFactor) &&
+                    trial.AppliedLutFactor > 0.0 ? trial.AppliedLutFactor : 1.0;
+            double result = weightedDisplacement / signedDisplacement;
+            return IsFinite(result) && result > 0.0 ? result : 1.0;
         }
 
         /// <summary>
