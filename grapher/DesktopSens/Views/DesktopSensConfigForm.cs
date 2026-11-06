@@ -2249,9 +2249,28 @@ namespace grapher.DesktopSens.Views
                                 if (profile.FrozenSampleLutNodeFactorsByAngleZone == null)
                                     profile.FrozenSampleLutNodeFactorsByAngleZone =
                                         new Dictionary<int, double[]>();
-                                DesktopSensLog.Warn(
-                                    "DesktopSens model v11 migration: pre-existing green cells will " +
-                                    "freeze from their historical trials on first sample-fit LUT build.");
+                                bool hasPersistedFrozenNodes = false;
+                                foreach (var nodeArray in profile.FrozenSampleLutNodeFactorsByAngleZone.Values)
+                                {
+                                    if (nodeArray == null) continue;
+                                    foreach (double factor in nodeArray)
+                                    {
+                                        if (IsFiniteValue(factor) && factor > 0.0)
+                                        {
+                                            hasPersistedFrozenNodes = true;
+                                            break;
+                                        }
+                                    }
+                                    if (hasPersistedFrozenNodes) break;
+                                }
+                                if (hasPersistedFrozenNodes)
+                                    DesktopSensLog.Info(
+                                        "DesktopSens model v11 migration: persisted frozen LUT nodes " +
+                                        "were found and will be preserved.");
+                                else
+                                    DesktopSensLog.Warn(
+                                        "DesktopSens model v11 migration: pre-existing green cells will " +
+                                        "freeze from their historical trials on first sample-fit LUT build.");
                                 CalibrationResidualCache.Clear(profile);
                             }
                             // Model v8 stores the Base Sens factor alongside each
