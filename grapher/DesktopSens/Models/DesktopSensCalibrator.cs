@@ -750,6 +750,18 @@ namespace grapher.DesktopSens.Models
                             writer.Write((double)sample.DY);
                         }
                     }
+
+                    // Applied per-sample LUT snapshots are part of the
+                    // residual dependency. Including exact IEEE bits prevents
+                    // a cache hit when only the historical active LUT changed.
+                    int appliedSampleFactorCount = trial.AppliedLutFactorsByRawSample != null
+                        ? trial.AppliedLutFactorsByRawSample.Count : -1;
+                    writer.Write(appliedSampleFactorCount);
+                    if (trial.AppliedLutFactorsByRawSample != null)
+                    {
+                        foreach (double factor in trial.AppliedLutFactorsByRawSample)
+                            writer.Write(BitConverter.DoubleToInt64Bits(factor));
+                    }
                 }
 
                 writer.Flush();
