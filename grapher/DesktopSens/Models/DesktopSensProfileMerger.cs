@@ -1075,10 +1075,6 @@ namespace grapher.DesktopSens.Models
                 }
             }
 
-            double minNodeSpeed = DesktopSensConstants.SampleLutMinSpeedCmPerSec;
-            double maxNodeSpeed = DesktopSensConstants.SampleLutMaxSpeedCmPerSec;
-            double logMin = Math.Log(minNodeSpeed);
-            double logMax = Math.Log(maxNodeSpeed);
             int unfrozen = 0;
             for (int node = 0; node < frozen.Length; node++)
             {
