@@ -389,8 +389,9 @@ namespace grapher.DesktopSens.Tests
 
             Assert.True(DesktopSensProfileMerger.UnfreezeSampleLutFromCell(profile, 0, 0));
             var result = profile.FrozenSampleLutNodeFactorsByAngleZone[0];
-            Assert.True(double.IsNaN(result[result.Length - 1]));
-            Assert.True(double.IsNaN(result[0]) || result[0] == 1.25);
+            for (int i = 0; i < result.Length; i++)
+                Assert.True(double.IsNaN(result[i]),
+                    "Recalibrating the first distance zone should release every node.");
         }
 
         private static DesktopSensTrial MakeSyntheticTrial(
