@@ -864,6 +864,11 @@ namespace grapher.DesktopSens.Models
                 persistedFrozen.Length == DesktopSensConstants.SampleLutDefaultNodes)
                 frozenNodes = (double[])persistedFrozen.Clone();
 
+            // Session bias is applied only by DesktopSensCalibrator's
+            // residual/chain reconstruction. This LUT fit uses raw projected
+            // samples and base-factor normalization (targetScales), so session
+            // bias is not a fit input. Even if residuals are rebuilt for a new
+            // session, frozen node factors remain exact solver constraints.
             SampleLutFitter.FitResult fit = SampleLutFitter.Fit(
                 eligible,
                 null,
