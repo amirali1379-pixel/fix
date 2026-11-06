@@ -177,7 +177,7 @@ namespace grapher.DesktopSens.Models
         public Dictionary<int, double> LastBuiltLutBaseFactorByAngleZone = new Dictionary<int, double>();
 
         // Exact frozen node factors for sample-fit LUTs, persisted per angle
-        // zone. NaN entries are free nodes; finite positive entries are
+        // zone. zero entries are free nodes; finite positive entries are
         // immutable until an explicit recalibration/unfreeze operation.
         // Arrays use the fixed SampleLutFitter node grid.
         public Dictionary<int, double[]> FrozenSampleLutNodeFactorsByAngleZone =
