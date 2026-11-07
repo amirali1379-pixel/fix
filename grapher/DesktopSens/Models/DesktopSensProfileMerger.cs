@@ -1159,22 +1159,16 @@ namespace grapher.DesktopSens.Models
                 !IsFinite(trial.EffectiveCpi) || trial.EffectiveCpi <= 0.0)
                 return result;
 
-            long previousTimestamp = trial.RawSamples[0].Timestamp;
-            for (int i = 1; i < trial.RawSamples.Count; i++)
+            foreach (SampleLutCachedSample cachedSample in
+                SampleLutSampleProcessor.GetCachedSamples(trial))
             {
-                var sample = trial.RawSamples[i];
-                long deltaTicks = sample.Timestamp - previousTimestamp;
-                previousTimestamp = sample.Timestamp;
-                double rawSpeed = SampleLutSampleProcessor.RawSpeedCmPerSec(
-                    sample.DX, sample.DY, deltaTicks, trial.EffectiveCpi);
+                double rawSpeed = cachedSample.RawSpeedCmPerSec;
                 if (rawSpeedDiagnostics != null && IsFinite(rawSpeed) && rawSpeed > 0.0)
                     rawSpeedDiagnostics.Add(rawSpeed);
+                if (!cachedSample.IsUsable) continue;
 
-                if (!SampleLutSampleProcessor.TryProcess(
-                    sample.DX, sample.DY, deltaTicks, trial.EffectiveCpi,
-                    trial.TargetAngleDegrees, out double speed, out double displacementCm))
-                    continue;
-                double weight = Math.Abs(displacementCm);
+                double speed = cachedSample.SpeedCmPerSec;
+                double weight = Math.Abs(cachedSample.ProjectedDisplacementCm);
                 if (IsFinite(speed) && speed > 0.0 && IsFinite(weight) && weight > 0.0)
                     result.Add((speed, weight));
             }

@@ -10,8 +10,113 @@ namespace grapher.DesktopSens.Models
     /// Speed is the 2-D mouse-vector magnitude; displacement remains projected
     /// onto the calibration target axis.
     /// </summary>
+    public struct SampleLutCachedSample
+    {
+        public double RawSpeedCmPerSec;
+        public double SpeedCmPerSec;
+        public double ProjectedDisplacementCm;
+        public bool IsUsable;
+    }
+
     public static class SampleLutSampleProcessor
     {
+        private sealed class CacheEntry
+        {
+            public ulong Key;
+            public System.Collections.Generic.List<SampleLutCachedSample> Samples;
+        }
+
+        private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<
+            DesktopSensTrial, CacheEntry> SampleCache =
+                new System.Runtime.CompilerServices.ConditionalWeakTable<DesktopSensTrial, CacheEntry>();
+        private static readonly object SampleCacheLock = new object();
+
+        /// <summary>
+        /// Cached per-trial speed/displacement extraction. The key includes
+        /// schema, immutable raw samples, CPI/target axis, and the captured
+        /// per-sample LUT-factor snapshot so stale trial data cannot be reused.
+        /// </summary>
+        public static System.Collections.Generic.IList<SampleLutCachedSample> GetCachedSamples(
+            DesktopSensTrial trial)
+        {
+            if (trial == null || trial.RawSamples == null || trial.RawSamples.Count < 2)
+                return new System.Collections.Generic.List<SampleLutCachedSample>();
+
+            ulong key = ComputeCacheKey(trial);
+            lock (SampleCacheLock)
+            {
+                if (SampleCache.TryGetValue(trial, out CacheEntry cached) &&
+                    cached != null && cached.Key == key && cached.Samples != null)
+                    return cached.Samples;
+
+                var samples = new System.Collections.Generic.List<SampleLutCachedSample>(
+                    trial.RawSamples.Count - 1);
+                long previousTimestamp = trial.RawSamples[0].Timestamp;
+                for (int i = 1; i < trial.RawSamples.Count; i++)
+                {
+                    MouseSample sample = trial.RawSamples[i];
+                    long deltaTicks = sample.Timestamp - previousTimestamp;
+                    previousTimestamp = sample.Timestamp;
+
+                    double rawSpeed = RawSpeedCmPerSec(
+                        sample.DX, sample.DY, deltaTicks, trial.EffectiveCpi);
+                    bool usable = TryProcess(
+                        sample.DX, sample.DY, deltaTicks, trial.EffectiveCpi,
+                        trial.TargetAngleDegrees, out double cleanSpeed,
+                        out double projectedDisplacement);
+                    samples.Add(new SampleLutCachedSample
+                    {
+                        RawSpeedCmPerSec = rawSpeed,
+                        SpeedCmPerSec = cleanSpeed,
+                        ProjectedDisplacementCm = projectedDisplacement,
+                        IsUsable = usable && Math.Abs(projectedDisplacement) > 1e-12
+                    });
+                }
+
+                SampleCache.Remove(trial);
+                SampleCache.Add(trial, new CacheEntry { Key = key, Samples = samples });
+                return samples;
+            }
+        }
+
+        private static ulong ComputeCacheKey(DesktopSensTrial trial)
+        {
+            ulong hash = 14695981039346656037UL;
+            AddHash(ref hash, DesktopSensConstants.SampleLutSampleCacheSchemaVersion);
+            AddHash(ref hash, trial.RawSamples.Count);
+            AddHash(ref hash, BitConverter.DoubleToInt64Bits(trial.EffectiveCpi));
+            AddHash(ref hash, BitConverter.DoubleToInt64Bits(trial.TargetAngleDegrees));
+            foreach (MouseSample sample in trial.RawSamples)
+            {
+                AddHash(ref hash, sample.Timestamp);
+                AddHash(ref hash, sample.DX);
+                AddHash(ref hash, sample.DY);
+            }
+            if (trial.AppliedLutFactorsByRawSample != null)
+            {
+                AddHash(ref hash, trial.AppliedLutFactorsByRawSample.Count);
+                foreach (double factor in trial.AppliedLutFactorsByRawSample)
+                    AddHash(ref hash, BitConverter.DoubleToInt64Bits(factor));
+            }
+            else
+            {
+                AddHash(ref hash, 0);
+            }
+            return hash;
+        }
+
+        private static void AddHash(ref ulong hash, long value)
+        {
+            unchecked
+            {
+                hash ^= (ulong)value;
+                hash *= 1099511628211UL;
+            }
+        }
+
+        private static void AddHash(ref ulong hash, int value)
+            => AddHash(ref hash, (long)value);
+
         /// <summary>
         /// Computes one cleaned sample. Short timestamp batches are ignored,
         /// and extreme velocity is winsorized to the named physical ceiling.

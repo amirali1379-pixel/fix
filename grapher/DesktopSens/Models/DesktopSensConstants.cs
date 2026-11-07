@@ -256,6 +256,8 @@ namespace grapher.DesktopSens.Models
         // physical ceiling that keeps isolated timestamp spikes from owning LUT nodes.
         public const double SampleLutMinimumSampleIntervalMs = 1.0;
         public const double SampleLutMaximumPhysicalSpeedCmPerSec = 300.0;
+        // Increment when the cached sample representation or speed policy changes.
+        public const int SampleLutSampleCacheSchemaVersion = 1;
         // If P90 is beyond the top node and implausibly far from the weighted
         // mean, cap ownership to 3x mean speed so one cell cannot freeze all nodes.
         public const double SampleLutFreezeP90MeanSpeedRatioLimit = 8.0;

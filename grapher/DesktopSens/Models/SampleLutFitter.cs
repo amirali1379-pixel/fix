@@ -497,21 +497,12 @@ namespace grapher.DesktopSens.Models
                 : 0.0;
             if (cmPerCount <= 0.0) return resultList;
 
-            long previousTimestamp = trial.RawSamples[0].Timestamp;
-            for (int i = 1; i < trial.RawSamples.Count; i++)
+            foreach (SampleLutCachedSample cachedSample in
+                SampleLutSampleProcessor.GetCachedSamples(trial))
             {
-                MouseSample sample = trial.RawSamples[i];
-                long delta = sample.Timestamp - previousTimestamp;
-                // Always advance timestamp state. Otherwise a bad interval
-                // would be merged into the next sample and create another spike.
-                previousTimestamp = sample.Timestamp;
-                if (!SampleLutSampleProcessor.TryProcess(
-                    sample.DX, sample.DY, delta, trial.EffectiveCpi,
-                    trial.TargetAngleDegrees, out double speedCmPerSec,
-                    out double displacementCm))
-                    continue;
-                if (Math.Abs(displacementCm) > 1e-12)
-                    resultList.Add((speedCmPerSec, displacementCm));
+                if (cachedSample.IsUsable)
+                    resultList.Add((cachedSample.SpeedCmPerSec,
+                        cachedSample.ProjectedDisplacementCm));
             }
             return resultList;
         }
