@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Windows.Forms;
+using Newtonsoft.Json;
 using OpenTK;
 using grapher.DesktopSens.Models;
 using grapher.Models.Mouse;
@@ -38,7 +39,8 @@ namespace grapher.DesktopSens.Views
         // that case.
         private Func<object> _activeProfileProvider;
         private int _selectedAxisIndex = -1;     // 0=Right, 1=Down, 2=Left, 3=Up
-        private int _selectedDistanceZone = -1;  // 0..N-1 on the selected axis,
+        private int _selectedDistanceZone = -1;
+        private string _lastTrialUndoSnapshotJson;  // 0..N-1 on the selected axis,
                                                  // where N = TrainingGeometry.Current.DistanceZoneCount
         // The EXACT distance in cm that the user clicked. Used for target
         // placement so the target appears exactly where the user clicked,
@@ -753,6 +755,75 @@ namespace grapher.DesktopSens.Views
         /// same manual-target-placement flow as the cardinal trainer
         /// and doesn't need these keys.
         /// </summary>
+        private void UndoLastTrainingTrial()
+        {
+            if (_profile == null || string.IsNullOrEmpty(_lastTrialUndoSnapshotJson))
+            {
+                DesktopSensToast.Show(this, "برای Undo، trial قبلی در این نشست موجود نیست.");
+                return;
+            }
+            try
+            {
+                DesktopSensProfile snapshot =
+                    JsonConvert.DeserializeObject<DesktopSensProfile>(_lastTrialUndoSnapshotJson);
+                if (snapshot == null) return;
+                DesktopSensProfileCopy.CopyPublicMembers(snapshot, _profile);
+                _lastTrialUndoSnapshotJson = null;
+                CalibrationResidualCache.Clear(_profile);
+                OnCellVerifiedPersistProfile();
+                UpdateTrainingArenaProperties();
+                UpdateTrainingHud();
+                DesktopSensLog.Warn("Training trial undo restored exact pre-trial profile snapshot.");
+            }
+            catch (Exception ex)
+            {
+                DesktopSensLog.Error("Could not undo last training trial", ex);
+                DesktopSensToast.Show(this, "Undo انجام نشد؛ snapshot قابل بازیابی نبود.");
+            }
+        }
+
+        private void ResetSelectedTrainingCell()
+        {
+            if (_profile == null || _selectedAxisIndex < 0 || _selectedDistanceZone < 0)
+            {
+                DesktopSensToast.Show(this, "ابتدا یک نقطه‌ی کالیبراسیون را انتخاب کن.");
+                return;
+            }
+            int directionCount = DesktopSensTrainingState.ResolveDirectionCount(_profile);
+            if (directionCount != 4 || !TrainingGeometry.Current.UseMidEndPoints)
+            {
+                DesktopSensToast.Show(this, "Reset نقطه‌ای فقط در حالت چهارجهته‌ی Mid/End فعال است.");
+                return;
+            }
+            int[] angleZones = DesktopSensTrainingState.AngleZoneIndicesForCount(directionCount);
+            if (_selectedAxisIndex >= angleZones.Length) return;
+            int angleZone = angleZones[_selectedAxisIndex];
+            int affected = 0;
+            if (_profile.CellTrainingStates != null)
+            {
+                for (int d = _selectedDistanceZone; d < TrainingGeometry.Current.DistanceZoneCount; d++)
+                {
+                    int index = DesktopSensProfile.GetCellIndex(angleZone, d);
+                    if (_profile.CellTrainingStates.TryGetValue(index, out var state) &&
+                        state != null && (state.Verified || state.PrecisionVerified)) affected++;
+                }
+            }
+            DialogResult confirm = MessageBox.Show(this,
+                "این نقطه reset می‌شود؛ trialهای خودش حذف و نقاط بالاتر NeedsReview می‌شوند.\n" +
+                "تعداد نقاط سبز متأثر: " + affected + "\nادامه می‌دهی؟",
+                "Reset calibration point", MessageBoxButtons.YesNo, MessageBoxIcon.Warning,
+                MessageBoxDefaultButton.Button2);
+            if (confirm != DialogResult.Yes) return;
+
+            DesktopSensTrainingState.ResetCell(_profile, angleZone, _selectedDistanceZone);
+            try { DesktopSensCalibrator.Calibrate(_profile); }
+            catch (Exception ex) { DesktopSensLog.Error("Calibration recompute after point reset failed", ex); }
+            _lastTrialUndoSnapshotJson = null;
+            OnCellVerifiedPersistProfile();
+            UpdateTrainingArenaProperties();
+            UpdateTrainingHud();
+        }
+
         private bool HandleTrainingModeKey(KeyEventArgs e)
         {
             // Sens Finder mode = its own environment. Cardinal-trainer
@@ -785,6 +856,20 @@ namespace grapher.DesktopSens.Views
             if (e.KeyCode == Keys.M && !e.Shift && !e.Control && !e.Alt)
             {
                 TryMergeAndApply();
+                e.Handled = true;
+                e.SuppressKeyPress = true;
+                return true;
+            }
+            if (e.KeyCode == Keys.Z && e.Control && !e.Alt && !e.Shift)
+            {
+                UndoLastTrainingTrial();
+                e.Handled = true;
+                e.SuppressKeyPress = true;
+                return true;
+            }
+            if (e.KeyCode == Keys.R && e.Shift && !e.Control && !e.Alt)
+            {
+                ResetSelectedTrainingCell();
                 e.Handled = true;
                 e.SuppressKeyPress = true;
                 return true;

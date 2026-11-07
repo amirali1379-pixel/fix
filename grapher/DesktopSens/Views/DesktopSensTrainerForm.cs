@@ -1541,6 +1541,10 @@ namespace grapher.DesktopSens.Views
             }
             else
             {
+                // Capture the entire persisted profile before this trial is
+                // appended. Ctrl+Z restores this exact snapshot, including LUT
+                // frozen nodes, cell counters/history, caches and factor arrays.
+                _lastTrialUndoSnapshotJson = JsonConvert.SerializeObject(_profile);
                 _profile.Trials.Add(trial);
             }
             // Clear the completed trial's marker before the A/B callback can
