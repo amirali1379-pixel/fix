@@ -74,6 +74,39 @@ namespace grapher.DesktopSens.Views
         private const double MaxPitchDegrees = 180.0;
         private double _activeRotationCorrectionDegrees = 0.0;
 
+        // ====================================================================
+        // ASDW HOLD-TO-ACCELERATE (user directive:
+        //   "ba har ye d 3 pixel mire jolo daghigh nist ... bayad bazeh
+        //    multiply 2 sanieh bashe va roo oon sorate nahai bemooneh
+        //    bade 2 sanieh")
+        //
+        // The previous exponential formula (2^tickCount) reached max speed
+        // in ~250 ms, which felt too jerky. We now use LINEAR growth:
+        //
+        //   • Initial press:    step = 1 px (precise placement)
+        //   • 0–200 ms held:    no auto-repeat (precise placement window)
+        //   • 200–2000 ms held: step grows LINEARLY from 1 px to 10 px
+        //   • After 2000 ms:    step stays at 10 px (final speed)
+        //
+        // Also: Windows sends repeated OnKeyDown events while the key is
+        // held. We detect this in OnKeyDown (key already in _asdwHeldKey)
+        // and skip those repeats — otherwise the user would see ~3 px per
+        // "press" because Windows auto-repeat fires 3+ times per second.
+        //
+        // Internally the camera stores degrees, not pixels, so we convert:
+        //   degreesPerPixel = MaxAxisDegrees / arenaRadiusPx
+        // (arenaRadiusPx is the on-screen radius that spans the full
+        // MaxAxisDegrees arc).
+        // ====================================================================
+        private Timer _asdwHoldTimer;
+        private Keys _asdwHeldKey = Keys.None;
+        private long _asdwHoldStartTicks;  // Stopwatch.GetTimestamp() at press
+        private const double AsdwInitialStepPixels = 1.0;
+        private const double AsdwMaxStepPixels = 10.0;
+        private const int AsdwAccelerationDelayMs = 200;     // hold this long before accelerating
+        private const int AsdwAccelerationRampMs = 2000;     // ramp from 1 px to 10 px over 2 s
+        private const int AsdwAccelerationIntervalMs = 16;    // timer tick rate
+
         private bool _cursorHidden;
 
         // ─────────────────────────────────────────────────────────────────────────
@@ -473,8 +506,13 @@ namespace grapher.DesktopSens.Views
                 // factors frozen on the completed trial.
                 if (_isTrainingMode) ApplyChainedCellCorrections(ref dx, ref dy);
                 _cameraYawDegrees += (float)(dx * degreesPerCount);
-                _cameraPitchDegrees = Math.Max(MinPitch, Math.Min(MaxPitch,
-                    _cameraPitchDegrees - (float)(dy * degreesPerCount)));
+                // PATCHED: removed the Math.Max(MinPitch, Math.Min(MaxPitch, ...))
+                // clamp entirely. The user explicitly said "mahdoodiate calibrate
+                // ASDW ro bardar kolan nakhastim" — remove the ASDW calibration
+                // limit completely. There must be NO clamp on pitch (or yaw).
+                // The previous ±89° (and later ±180°) caps were artificial limits
+                // the user never asked for.
+                _cameraPitchDegrees -= (float)(dy * degreesPerCount);
                 AccumulateRawCursor((float)dx, (float)dy);
                 if (sample.DX != 0 || sample.DY != 0)
                 {
@@ -487,8 +525,9 @@ namespace grapher.DesktopSens.Views
             else
             {
                 _cameraYawDegrees += (float)(sample.DX * degreesPerCount);
-                _cameraPitchDegrees = Math.Max(MinPitch, Math.Min(MaxPitch,
-                    _cameraPitchDegrees - (float)(sample.DY * degreesPerCount)));
+                // PATCHED: removed the MinPitch/MaxPitch clamp — see the
+                // Flicking branch above for the rationale.
+                _cameraPitchDegrees -= (float)(sample.DY * degreesPerCount);
             }
         }
 
@@ -574,8 +613,8 @@ namespace grapher.DesktopSens.Views
 
                 _targetYawDegrees = NormalizeAngle(rawYaw);
                 _targetPitchDegrees = rawPitch;
-                if (_targetPitchDegrees > TrainingGeometry.Current.MaxPitchDegrees) _targetPitchDegrees = TrainingGeometry.Current.MaxPitchDegrees;
-                if (_targetPitchDegrees < -TrainingGeometry.Current.MaxPitchDegrees) _targetPitchDegrees = -TrainingGeometry.Current.MaxPitchDegrees;
+                // PATCHED: removed the MaxPitchDegrees clamp on _targetPitchDegrees.
+                // The user explicitly said no limit on calibration.
                 _targetAngleDegrees = NearestCardinalIndex(rawYaw, rawPitch) * 90.0;
                 double yawRad = _targetYawDegrees * Math.PI / 180.0;
                 double pitchRad = _targetPitchDegrees * Math.PI / 180.0;
@@ -811,55 +850,45 @@ namespace grapher.DesktopSens.Views
 
             if (_state == TrialState.ASDWAdjusting)
             {
-                // ASDW is a pixel-precision alignment control, not a fixed-angle
-                // nudge. A fixed 0.35-degree step moved the projected cursor by
-                // 3-4 px on a typical display. Instead, move the projected point
-                // by exactly one screen pixel and invert the projection back to
-                // yaw/pitch. This keeps one key press useful for fine alignment
-                // at every supported window size and arena radius.
-                bool adjusted = false;
-                double arenaRadiusPx = Math.Max(1.0,
-                    Math.Min(ClientSize.Width, ClientSize.Height) * 0.42);
-                const double pixelStep = 1.0;
-
-                if (e.KeyCode == Keys.A || e.KeyCode == Keys.D)
-                {
-                    double yawRadians = NormalizeSignedAngle(
-                        _cameraYawDegrees - _calibrationYawDegrees) * Math.PI / 180.0;
-                    double projectedX = Math.Sin(yawRadians) * arenaRadiusPx;
-                    projectedX += e.KeyCode == Keys.D ? pixelStep : -pixelStep;
-                    projectedX = Math.Max(-arenaRadiusPx, Math.Min(arenaRadiusPx, projectedX));
-                    double normalizedX = projectedX / arenaRadiusPx;
-                    // Preserve the current yaw hemisphere. asin() alone folds
-                    // angles beyond +/-90 degrees back into the front half.
-                    double yawHemisphere = Math.Cos(yawRadians) < 0.0 ? -1.0 : 1.0;
-                    double nextYawRadians = Math.Atan2(
-                        normalizedX,
-                        yawHemisphere * Math.Sqrt(Math.Max(0.0, 1.0 - normalizedX * normalizedX)));
-                    _cameraYawDegrees = (float)NormalizeAngle(
-                        _calibrationYawDegrees + nextYawRadians * 180.0 / Math.PI);
-                    adjusted = true;
-                }
-                else if (e.KeyCode == Keys.W || e.KeyCode == Keys.S)
-                {
-                    double pitchRadians = (_cameraPitchDegrees - CalibrationPitchDegrees) *
-                        Math.PI / 180.0;
-                    double projectedY = -Math.Sin(pitchRadians) * arenaRadiusPx;
-                    projectedY += e.KeyCode == Keys.W ? -pixelStep : pixelStep;
-                    projectedY = Math.Max(-arenaRadiusPx, Math.Min(arenaRadiusPx, projectedY));
-                    double nextPitchRadians = Math.Asin(-projectedY / arenaRadiusPx);
-                    double nextPitchDegrees = CalibrationPitchDegrees +
-                        nextPitchRadians * 180.0 / Math.PI;
-                    _cameraPitchDegrees = (float)Math.Max(MinPitch,
-                        Math.Min(MaxPitch, nextPitchDegrees));
-                    adjusted = true;
-                }
-
+                // ASDW with hold-to-accelerate. Each press moves the camera by
+                // exactly 1 PIXEL on screen (not 1 degree). If the user holds
+                // the key for >= 200 ms, a timer fires every 16 ms and the
+                // per-tick step grows LINEARLY over 2 seconds, from 1 px to
+                // AsdwMaxStepPixels (10 px), and stays at max speed after that.
+                //
+                // IMPORTANT: Windows sends repeated OnKeyDown events while the
+                // key is held. We must ignore those repeats — otherwise each
+                // Windows auto-repeat would re-apply the initial 1 px step
+                // AND restart the hold timer, so the user would see ~3 px per
+                // "press" and never reach the accelerated mode.
+                bool adjusted = IsAsdwKey(e.KeyCode);
                 if (adjusted)
                 {
-                    SyncCursorPositionToCamera();
-                    ClampCursorToCanvas();
-                    UpdateArena3D();
+                    // If this key is already being held (Windows auto-repeat),
+                    // skip — the hold timer is already running and will
+                    // accelerate on its own.
+                    if (_asdwHeldKey == e.KeyCode && _asdwHoldTimer != null && _asdwHoldTimer.Enabled)
+                    {
+                        adjusted = false;  // don't re-apply, don't restart timer
+                    }
+                    else
+                    {
+                        // Compute the degree-equivalent of 1 pixel at the current
+                        // arena radius. arenaRadiusPx spans the full MaxAxisDegrees,
+                        // so degreesPerPixel = MaxAxisDegrees / arenaRadiusPx.
+                        double arenaRadiusPx = Math.Max(1.0,
+                            Math.Min(ClientSize.Width, ClientSize.Height) * 0.42);
+                        double maxAxisDeg = Math.Max(0.001, TrainingGeometry.Current.MaxAxisDegrees);
+                        double degreesPerPixel = maxAxisDeg / arenaRadiusPx;
+                        // Apply the initial 1-pixel step now.
+                        ApplyAsdwStep(e.KeyCode, degreesPerPixel);
+                        // Start the hold timer (it will use the same degreesPerPixel
+                        // for its accelerated steps).
+                        StartAsdwHold(e.KeyCode, degreesPerPixel);
+                        SyncCursorPositionToCamera();
+                        ClampCursorToCanvas();
+                        UpdateArena3D();
+                    }
                 }
 
                 if (e.KeyCode == Keys.Space)
@@ -874,6 +903,83 @@ namespace grapher.DesktopSens.Views
                     e.SuppressKeyPress = true;
                 }
             }
+        }
+
+        protected override void OnKeyUp(KeyEventArgs e)
+        {
+            // Stop the ASDW hold timer when the user releases the key.
+            if (IsAsdwKey(e.KeyCode)) StopAsdwHold();
+            base.OnKeyUp(e);
+        }
+
+        private static bool IsAsdwKey(Keys k)
+            => k == Keys.A || k == Keys.D || k == Keys.W || k == Keys.S;
+
+        /// <summary>
+        /// Apply one ASDW step of the given magnitude (in degrees) for the
+        /// given key. W = +pitch, S = -pitch, D = +yaw, A = -yaw.
+        /// </summary>
+        private void ApplyAsdwStep(Keys key, double stepDegrees)
+        {
+            switch (key)
+            {
+                case Keys.D: _cameraYawDegrees   += (float)stepDegrees; break;
+                case Keys.A: _cameraYawDegrees   -= (float)stepDegrees; break;
+                case Keys.W: _cameraPitchDegrees += (float)stepDegrees; break;
+                case Keys.S: _cameraPitchDegrees -= (float)stepDegrees; break;
+            }
+        }
+
+        /// <summary>
+        /// Start the hold-to-accelerate timer. If the user keeps holding the
+        /// key past AsdwAccelerationDelayMs (200 ms), a 16 ms timer fires and
+        /// the per-tick step grows LINEARLY from AsdwInitialStepPixels (1 px)
+        /// to AsdwMaxStepPixels (10 px) over AsdwAccelerationRampMs (2000 ms).
+        /// After 2000 ms the step stays at the max speed forever.
+        /// The `degreesPerPixel` argument converts pixel-based steps to
+        /// degree-based camera rotations.
+        /// </summary>
+        private void StartAsdwHold(Keys key, double degreesPerPixel)
+        {
+            StopAsdwHold();
+            _asdwHeldKey = key;
+            _asdwHoldStartTicks = System.Diagnostics.Stopwatch.GetTimestamp();
+            _asdwHoldTimer = new Timer { Interval = AsdwAccelerationIntervalMs };
+            _asdwHoldTimer.Tick += (s, ev) =>
+            {
+                if (_asdwHeldKey == Keys.None) { StopAsdwHold(); return; }
+                double elapsedMs = (System.Diagnostics.Stopwatch.GetTimestamp() - _asdwHoldStartTicks)
+                                   * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
+                // Only fire once we are past the initial delay. The first
+                // 200 ms is the "precise placement" window — the user gets
+                // just the 1 px they already received on key-down.
+                if (elapsedMs < AsdwAccelerationDelayMs) return;
+                // LINEAR growth: from 1 px at 200 ms to 10 px at 2000 ms.
+                // After 2000 ms the step stays at 10 px.
+                double rampMs = (double)AsdwAccelerationRampMs;
+                double rampStart = (double)AsdwAccelerationDelayMs;
+                double t = (elapsedMs - rampStart) / rampMs;  // 0 → 1 over 2 s
+                if (t > 1.0) t = 1.0;
+                if (t < 0.0) t = 0.0;
+                double pixels = AsdwInitialStepPixels
+                              + (AsdwMaxStepPixels - AsdwInitialStepPixels) * t;
+                double stepDegrees = pixels * degreesPerPixel;
+                ApplyAsdwStep(_asdwHeldKey, stepDegrees);
+                SyncCursorPositionToCamera();
+                ClampCursorToCanvas();
+                UpdateArena3D();
+            };
+            _asdwHoldTimer.Start();
+        }
+
+        private void StopAsdwHold()
+        {
+            if (_asdwHoldTimer != null)
+            {
+                try { _asdwHoldTimer.Stop(); _asdwHoldTimer.Dispose(); } catch { }
+                _asdwHoldTimer = null;
+            }
+            _asdwHeldKey = Keys.None;
         }
 
         private void SyncCursorPositionToCamera()
@@ -1034,6 +1140,50 @@ namespace grapher.DesktopSens.Views
                 manualAsdwFinalSignedErrorCm * manualAsdwFinalSignedErrorCm);
             bool hasManualAsdwCorrection = Math.Abs(asdwNudgeCm) > 1e-9;
 
+            // NEW (Model v6): effective target for calibration. When the user actually
+            // used ASDW and the post-ASDW landing sits inside this cell's adaptive
+            // tolerance, the "true target" for the flick was flick + nudge, so the
+            // calibration factor becomes (flick + nudge) / flick. This is what makes
+            // ASDW-verified corrections influence the per-cell factor rather than just
+            // being logged. SignedErrorCm stays raw; only the calibration residual
+            // (which the calibrator reconstructs from NeededDistanceCm) reflects the
+            // correction.
+            double neededDistanceCm = double.NaN;
+            if (hasManualAsdwCorrection)
+            {
+                double cellTolerance = DesktopSensConstants.DefaultToleranceCm;
+                try
+                {
+                    int angleZoneForTol = ZoneCalculations.AngleToZoneIndex(targetAngle);
+                    int distanceZoneForTol = _selectedDistanceZone >= 0
+                        ? _selectedDistanceZone
+                        : ZoneCalculations.DistanceToZoneIndex(_targetDistanceCm, _maxDistanceCm);
+                    int cellIndexForTol = DesktopSensProfile.GetCellIndex(
+                        angleZoneForTol, distanceZoneForTol);
+                    if (_profile.CellTrainingStates != null &&
+                        _profile.CellTrainingStates.TryGetValue(cellIndexForTol, out var tolState) &&
+                        tolState != null &&
+                        IsFiniteValue(tolState.EffectiveToleranceCm) &&
+                        tolState.EffectiveToleranceCm > 0.0)
+                        cellTolerance = tolState.EffectiveToleranceCm;
+                }
+                catch (Exception ex)
+                {
+                    DesktopSensLog.Warn("Could not resolve cell tolerance for NeededDistanceCm; using default", ex);
+                }
+
+                if (IsFiniteValue(manualAsdwFinalErrorCm) &&
+                    manualAsdwFinalErrorCm <= cellTolerance &&
+                    IsFiniteValue(flickDistanceCm) &&
+                    flickDistanceCm > DesktopSensConstants.MinimumDenominatorCm)
+                {
+                    double candidate = flickDistanceCm + asdwNudgeCm;
+                    if (IsFiniteValue(candidate) &&
+                        candidate > DesktopSensConstants.MinimumDenominatorCm)
+                        neededDistanceCm = candidate;
+                }
+            }
+
             // CHAIN FIX (Claude directive #1): compute the live LUT
             // factor at this trial's average speed. The trial's average
             // speed is the same formula as TryBuildCurveSample:
@@ -1135,6 +1285,9 @@ namespace grapher.DesktopSens.Views
             // final landing residual is what gates the curve sample.
             DesktopSensLog.Warn(
                 "FinishTrial: rawFlick=" + rawFlickDistanceCm.ToString("0.000") + "cm" +
+                " needed=" + (double.IsNaN(neededDistanceCm)
+                    ? "n/a"
+                    : neededDistanceCm.ToString("0.000") + "cm") +
                 " asdwNudge=" + asdwNudgeCm.ToString("+0.000;-0.000;0.000") + "cm" +
                 " (stored separately, NOT added to flick)" +
                 " target=" + targetDistanceCm.ToString("0.000") + "cm" +
@@ -1204,6 +1357,7 @@ namespace grapher.DesktopSens.Views
                 ManualAsdwCorrectionCm = asdwNudgeCm,
                 ManualAsdwFinalErrorCm = manualAsdwFinalErrorCm,
                 HasManualAsdwCorrection = hasManualAsdwCorrection,
+                NeededDistanceCm = neededDistanceCm,
                 // Record the live LUT factor at this trial's pre-driver
                 // average speed. The calibrator applies it once to the raw
                 // input observation, estimates the remaining residual factor,
@@ -1221,6 +1375,40 @@ namespace grapher.DesktopSens.Views
                 AppliedLutFactor = appliedLutFactor,
                 HasAppliedLutFactor = hasAppliedLutFactor
             };
+
+            // Snapshot the active speed LUT at each raw input sample so
+            // residual reconstruction can replay the actual per-sample
+            // driver multiplier (rather than a single median-speed factor).
+            trial.AppliedLutFactorsByRawSample = new List<double>(trial.RawSamples.Count);
+            trial.AppliedLutFactorsByRawSample.Add(1.0);
+            double sampleCmPerCount = trial.EffectiveCpi > 0.0
+                ? DesktopSensConstants.InchesToCm / trial.EffectiveCpi : 0.0;
+            double targetRadForSampleLut = targetAngle * Math.PI / 180.0;
+            string sampleLutAxis = Math.Abs(Math.Cos(targetRadForSampleLut)) >=
+                Math.Abs(Math.Sin(targetRadForSampleLut)) ? "X" : "Y";
+            for (int sampleIndex = 1; sampleIndex < trial.RawSamples.Count; sampleIndex++)
+            {
+                MouseSample prevSample = trial.RawSamples[sampleIndex - 1];
+                MouseSample currSample = trial.RawSamples[sampleIndex];
+                long deltaTicks = currSample.Timestamp - prevSample.Timestamp;
+                double factorAtSample = 1.0;
+                if (activeProfile != null && deltaTicks > 0 && sampleCmPerCount > 0.0)
+                {
+                    double dtSec = deltaTicks / (double)Stopwatch.Frequency;
+                    // Use the same 2-D instantaneous speed metric and
+                    // timestamp cleaning as sample-fit and freeze ownership.
+                    if (SampleLutSampleProcessor.TryProcess(
+                        currSample.DX, currSample.DY, deltaTicks, trial.EffectiveCpi,
+                        targetAngle, out double speedCmPerSec, out _))
+                    {
+                        double queried = RawAccelSettingsBridge.LookupActiveLutFactorFromProfile(
+                            activeProfile, speedCmPerSec, sampleLutAxis);
+                        if (IsFiniteValue(queried) && queried > 0.0)
+                            factorAtSample = queried;
+                    }
+                }
+                trial.AppliedLutFactorsByRawSample.Add(factorAtSample);
+            }
 
             // Preserve the capture-time residual for the training-state hit check.
             // DesktopSensCalibrator independently replays raw samples in
@@ -1255,6 +1443,55 @@ namespace grapher.DesktopSens.Views
                 maxAngularErrorDegrees: _sensitivityFinderMode
                     ? double.MaxValue
                     : DesktopSensCalibrator.MaxAngularErrorDegrees);
+
+            // Apply the strict gate only to cardinal Train flicks. Sensitivity
+            // Finder keeps its own capture policy and diagnostic/evaluation
+            // trials never alter training state.
+            DesktopSensTrialGateResult trainGateResult = null;
+            if (!_sensitivityFinderMode && _isTrainingMode && !trial.IsEvaluationOnly &&
+                !trial.WasRejected && _selectedDistanceZone >= 0)
+            {
+                double zoneStartCm = _selectedDistanceZone > 0
+                    ? TrainingGeometry.Current.MarkerDistanceCm(
+                        _selectedDistanceZone - 1, _maxDistanceCm)
+                    : 0.0;
+                trainGateResult = DesktopSensTrialGate.Evaluate(
+                    trial, zoneStartCm, _selectedDistanceZone == 0);
+                if (!trainGateResult.Accepted)
+                {
+                    trial.WasRejected = true;
+                    trial.RejectionReason = trainGateResult.Reason;
+                    DesktopSensLog.Warn(
+                        "Train trial gate rejected: reason=" + trainGateResult.Reason +
+                        " rawFlickCm=" + trial.FlickDistanceCm.ToString("0.000") +
+                        " targetCm=" + trial.TargetDistanceCm.ToString("0.000") +
+                        " zoneStartCm=" + zoneStartCm.ToString("0.000") +
+                        " durationMs=" + trial.DurationMs.ToString("0.0"));
+                    string gateMessage;
+                    switch (trainGateResult.Reason)
+                    {
+                        case TrialRejectionReason.DidNotEnterZone:
+                            gateMessage = "فلیک هنوز داخل زون قبلی مانده؛ نقطه‌ی انتهای زون قبلی را دوباره کالیبره کن.";
+                            break;
+                        case TrialRejectionReason.OvershootOutOfRange:
+                            gateMessage = "فلیک بیش از حد از هدف عبور کرد؛ این trial رد شد.";
+                            break;
+                        case TrialRejectionReason.DurationOutOfRange:
+                            gateMessage = "فلیک بیش از حد طولانی یا کوتاه بود؛ یک flick سریع و پیوسته انجام بده.";
+                            break;
+                        case TrialRejectionReason.LongPause:
+                            gateMessage = "وسط فلیک مکث طولانی ثبت شد؛ حرکت را پیوسته انجام بده.";
+                            break;
+                        case TrialRejectionReason.PeakVelocityTooLow:
+                            gateMessage = "سرعت فلیک خیلی کم بود؛ با حرکت سریع‌تر تکرار کن.";
+                            break;
+                        default:
+                            gateMessage = "فلیک برای کالیبراسیون معتبر نبود؛ دوباره تلاش کن.";
+                            break;
+                    }
+                    DesktopSensToast.Show(this, gateMessage);
+                }
+            }
 
             DesktopSensLog.Warn(
                 (_sensitivityFinderMode ? "Sensitivity Finder" : "Train") +

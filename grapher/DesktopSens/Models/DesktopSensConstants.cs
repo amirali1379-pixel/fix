@@ -260,6 +260,14 @@ namespace grapher.DesktopSens.Models
         // mean, cap ownership to 3x mean speed so one cell cannot freeze all nodes.
         public const double SampleLutFreezeP90MeanSpeedRatioLimit = 8.0;
         public const double SampleLutFreezeFallbackMeanSpeedMultiplier = 3.0;
+        // Trial gate for training: reject wandering/aborted flicks before they
+        // can update cell statistics, fit samples, verification, or LUT freeze.
+        public const double TrainingTrialMaxDurationMs = 4500.0;
+        public const double TrainingTrialMaxOvershootRatio = 2.5;
+        public const double TrainingTrialFirstZoneMinDistanceRatio = 0.20;
+        public const double TrainingTrialMaxInternalPauseMs = 750.0;
+        public const double TrainingTrialMinPeakSpeedCmPerSec = 2.0;
+        public const double TrainingTrialZoneEntryToleranceCm = 0.05;
 
         /// <summary>Ridge prior on (f - 1) to keep the fit well-behaved when data is sparse.</summary>
         public const double SampleLutPriorWeight = 1e-3;
