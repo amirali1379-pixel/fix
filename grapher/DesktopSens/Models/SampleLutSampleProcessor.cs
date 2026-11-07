@@ -18,6 +18,7 @@ namespace grapher.DesktopSens.Models
         public double AccumulatedDxCounts;
         public double AccumulatedDyCounts;
         public long AccumulatedDeltaTicks;
+        public int RawSampleCount;
         public bool IsUsable;
     }
 
@@ -59,6 +60,7 @@ namespace grapher.DesktopSens.Models
                     DesktopSensConstants.SampleLutMinimumSampleIntervalMs / 1000.0);
                 double pendingDx = 0.0, pendingDy = 0.0;
                 long pendingTicks = 0;
+                int pendingSampleCount = 0;
                 for (int i = 1; i < trial.RawSamples.Count; i++)
                 {
                     MouseSample sample = trial.RawSamples[i];
@@ -71,12 +73,14 @@ namespace grapher.DesktopSens.Models
                     pendingDx += sample.DX;
                     pendingDy += sample.DY;
                     pendingTicks += deltaTicks;
+                    pendingSampleCount++;
                     if (pendingTicks < minimumTicks) continue;
 
                     AddProcessedSample(samples, pendingDx, pendingDy, pendingTicks,
-                        trial.EffectiveCpi, trial.TargetAngleDegrees);
+                        trial.EffectiveCpi, trial.TargetAngleDegrees, pendingSampleCount);
                     pendingDx = pendingDy = 0.0;
                     pendingTicks = 0;
+                    pendingSampleCount = 0;
                 }
                 if (pendingTicks > 0)
                 {
@@ -86,13 +90,15 @@ namespace grapher.DesktopSens.Models
                         AddProcessedSample(samples, last.AccumulatedDxCounts + pendingDx,
                             last.AccumulatedDyCounts + pendingDy,
                             last.AccumulatedDeltaTicks + pendingTicks,
-                            trial.EffectiveCpi, trial.TargetAngleDegrees);
+                            trial.EffectiveCpi, trial.TargetAngleDegrees,
+                            last.RawSampleCount + pendingSampleCount);
                         samples.RemoveAt(samples.Count - 2);
                     }
                     else
                     {
                         AddProcessedSample(samples, pendingDx, pendingDy, pendingTicks,
-                            trial.EffectiveCpi, trial.TargetAngleDegrees, allowShortInterval: true);
+                            trial.EffectiveCpi, trial.TargetAngleDegrees,
+                            pendingSampleCount, allowShortInterval: true);
                     }
                 }
 
@@ -105,7 +111,7 @@ namespace grapher.DesktopSens.Models
         private static void AddProcessedSample(
             System.Collections.Generic.List<SampleLutCachedSample> samples,
             double dx, double dy, long ticks, double cpi, double targetAngle,
-            bool allowShortInterval = false)
+            int rawSampleCount, bool allowShortInterval = false)
         {
             double rawSpeed = RawSpeedCmPerSec(dx, dy, ticks, cpi);
             double speed, displacement;
@@ -120,6 +126,7 @@ namespace grapher.DesktopSens.Models
                 AccumulatedDxCounts = dx,
                 AccumulatedDyCounts = dy,
                 AccumulatedDeltaTicks = ticks,
+                RawSampleCount = rawSampleCount,
                 IsUsable = usable && Math.Abs(displacement) > 1e-12
             });
         }

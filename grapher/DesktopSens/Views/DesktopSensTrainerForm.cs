@@ -1381,30 +1381,22 @@ namespace grapher.DesktopSens.Views
             // driver multiplier (rather than a single median-speed factor).
             trial.AppliedLutFactorsByRawSample = new List<double>(trial.RawSamples.Count);
             trial.AppliedLutFactorsByRawSample.Add(1.0);
-            double sampleCmPerCount = trial.EffectiveCpi > 0.0
-                ? DesktopSensConstants.InchesToCm / trial.EffectiveCpi : 0.0;
             double targetRadForSampleLut = targetAngle * Math.PI / 180.0;
             string sampleLutAxis = Math.Abs(Math.Cos(targetRadForSampleLut)) >=
                 Math.Abs(Math.Sin(targetRadForSampleLut)) ? "X" : "Y";
-            for (int sampleIndex = 1; sampleIndex < trial.RawSamples.Count; sampleIndex++)
+            foreach (SampleLutCachedSample processedSample in
+                SampleLutSampleProcessor.GetCachedSamples(trial))
             {
-                MouseSample prevSample = trial.RawSamples[sampleIndex - 1];
-                MouseSample currSample = trial.RawSamples[sampleIndex];
-                long deltaTicks = currSample.Timestamp - prevSample.Timestamp;
                 double factorAtSample = 1.0;
-                if (activeProfile != null && deltaTicks > 0 && sampleCmPerCount > 0.0)
+                if (activeProfile != null && processedSample.IsUsable)
                 {
-                    if (SampleLutSampleProcessor.TryProcess(
-                        currSample.DX, currSample.DY, deltaTicks, trial.EffectiveCpi,
-                        targetAngle, out double speedCmPerSec, out _))
-                    {
-                        double queried = RawAccelSettingsBridge.LookupActiveLutFactorFromProfile(
-                            activeProfile, speedCmPerSec, sampleLutAxis);
-                        if (IsFiniteValue(queried) && queried > 0.0)
-                            factorAtSample = queried;
-                    }
+                    double queried = RawAccelSettingsBridge.LookupActiveLutFactorFromProfile(
+                        activeProfile, processedSample.SpeedCmPerSec, sampleLutAxis);
+                    if (IsFiniteValue(queried) && queried > 0.0)
+                        factorAtSample = queried;
                 }
-                trial.AppliedLutFactorsByRawSample.Add(factorAtSample);
+                for (int i = 0; i < processedSample.RawSampleCount; i++)
+                    trial.AppliedLutFactorsByRawSample.Add(factorAtSample);
             }
 
             // Preserve the capture-time residual for the training-state hit check.
