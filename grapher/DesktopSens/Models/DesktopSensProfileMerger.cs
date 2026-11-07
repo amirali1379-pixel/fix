@@ -1239,6 +1239,50 @@ namespace grapher.DesktopSens.Models
             return sorted[sorted.Count - 1].speed;
         }
 
+        /// <summary>
+        /// Checks whether this cell has at least one free LUT node at or below
+        /// its cleaned-sample P90. A cell whose samples are entirely inside the
+        /// frozen prefix cannot contribute a new segment and must not turn green.
+        /// </summary>
+        public static bool HasFreeSampleLutNodeForCell(
+            DesktopSensProfile profile, int angleZone, int distanceZone, out int freeNodeCount)
+        {
+            freeNodeCount = DesktopSensConstants.SampleLutDefaultNodes;
+            if (profile == null || profile.FrozenSampleLutNodeFactorsByAngleZone == null ||
+                !profile.FrozenSampleLutNodeFactorsByAngleZone.TryGetValue(angleZone, out var frozen) ||
+                frozen == null || frozen.Length != DesktopSensConstants.SampleLutDefaultNodes)
+                return true;
+
+            var samples = new List<(double speed, double displacementWeight)>();
+            if (profile.Trials != null)
+            {
+                foreach (DesktopSensTrial trial in profile.Trials)
+                {
+                    if (trial == null || trial.AngleZoneIndex != angleZone ||
+                        trial.DistanceZoneIndex != distanceZone || trial.IsEvaluationOnly ||
+                        trial.IsSessionAnchor || trial.IsCalibrationExcluded || trial.WasRejected)
+                        continue;
+                    List<(double speed, double displacementWeight)> projected =
+                        GetProjectedSpeedSamplesForFreeze(trial);
+                    if (projected.Count == 0 && IsFinite(trial.FlickDistanceCm) &&
+                        trial.FlickDistanceCm > 0.0 && IsFinite(trial.DurationMs) && trial.DurationMs > 0.0)
+                        projected.Add((trial.FlickDistanceCm * 1000.0 / trial.DurationMs, trial.FlickDistanceCm));
+                    samples.AddRange(projected);
+                }
+            }
+            double p90 = WeightedPercentile(samples, 0.90);
+            if (!IsFinite(p90) || p90 <= 0.0) return true;
+
+            freeNodeCount = 0;
+            for (int node = 0; node < frozen.Length; node++)
+            {
+                if (IsFinite(frozen[node]) && frozen[node] > 0.0) continue;
+                if (GetFixedNodeSpeed(node, frozen.Length) <= p90)
+                    freeNodeCount++;
+            }
+            return freeNodeCount > 0;
+        }
+
         private static double GetFixedNodeSpeed(int node, int nodeCount)
         {
             if (nodeCount <= 1) return DesktopSensConstants.SampleLutMinSpeedCmPerSec;

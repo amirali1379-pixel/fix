@@ -1948,6 +1948,29 @@ namespace grapher.DesktopSens.Views
                 return;
             }
 
+            if (TrainingGeometry.Current.UseMidEndPoints)
+            {
+                bool alreadyGreen = _profile.CellTrainingStates.TryGetValue(cellIndex, out var currentCellBeforeFit) &&
+                    currentCellBeforeFit != null && currentCellBeforeFit.Verified &&
+                    currentCellBeforeFit.PrecisionVerified;
+                int freeNodeCount;
+                if (!alreadyGreen && !DesktopSensProfileMerger.HasFreeSampleLutNodeForCell(
+                    _profile, angleZone, _selectedDistanceZone, out freeNodeCount))
+                {
+                    trial.IsCalibrationExcluded = true;
+                    trial.WasRejected = true;
+                    trial.RejectionReason = TrialRejectionReason.NoFreeLutNodes;
+                    DesktopSensLog.Warn("Training trial blocked: no free LUT node in current speed range; cell=" +
+                        cellIndex + " freeNodes=" + freeNodeCount);
+                    DesktopSensToast.Show(this,
+                        "سرعت این نقطه با محدوده‌ی قفل‌شده‌ی نقطه‌ی قبل هم‌پوشانی دارد؛ نقطه‌ی قبلی را دوباره کالیبره کن یا فلیک را با سرعت متفاوت بزن");
+                    OnCellVerifiedPersistProfile();
+                    UpdateTrainingArenaProperties();
+                    UpdateTrainingHud();
+                    return;
+                }
+            }
+
             // Capture the previous verified-flag so we can detect the
             // yellow→green transition and trigger an explicit save. The
             // user explained: "when a point becomes green, it must be
