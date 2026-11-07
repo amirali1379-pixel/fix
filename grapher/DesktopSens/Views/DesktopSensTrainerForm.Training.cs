@@ -1751,7 +1751,6 @@ namespace grapher.DesktopSens.Views
         /// </summary>
         private void RecordTrainingAttempt(DesktopSensTrial trial)
         {
-            var calibrateMergeApplyTimer = System.Diagnostics.Stopwatch.StartNew();
             // FIX 6 (from AI review): explicit logging for discarded
             // trials so the user (or developer) can see — via the
             // "Show Diag Log" button on DesktopSensConfigForm — exactly
@@ -2003,6 +2002,7 @@ namespace grapher.DesktopSens.Views
             // Re-run the per-cell calibrator so factors stay in sync with the
             // trial set. Live mouse input remains raw; Calibrate() rebuilds all
             // chain residuals from raw samples in deterministic zone order.
+            var calibrateMergeApplyTimer = System.Diagnostics.Stopwatch.StartNew();
             try
             {
                 DesktopSensCalibrator.Calibrate(_profile);
