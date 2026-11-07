@@ -719,9 +719,13 @@ namespace grapher.DesktopSens.Tests
 
             double angleRad = trial.TargetAngleDegrees * Math.PI / 180.0;
             double expected = 0.0;
-            foreach (var sample in trial.RawSamples)
+            // Sample zero has no previous timestamp and is intentionally not processed.
+            for (int sampleIndex = 1; sampleIndex < trial.RawSamples.Count; sampleIndex++)
+            {
+                var sample = trial.RawSamples[sampleIndex];
                 expected += (sample.DX * Math.Cos(angleRad) + sample.DY * Math.Sin(angleRad)) *
                     DesktopSensConstants.InchesToCm / trial.EffectiveCpi;
+            }
             double actual = 0.0;
             foreach (var sample in SampleLutSampleProcessor.GetCachedSamples(trial))
                 if (sample.IsUsable) actual += sample.ProjectedDisplacementCm;
@@ -755,6 +759,56 @@ namespace grapher.DesktopSens.Tests
                 "Sub-ms timestamp spikes must not freeze the entire fixed LUT node grid.");
             Assert.True(frozen.Any(value => value == 0.0),
                 "Higher-speed nodes must remain free for downstream cells.");
+        }
+
+        [Fact]
+        public void Fit_FortyNodesWithSparseData_RemainsSmoothAndKeepsUnobservedNodesNearNeutral()
+        {
+            const int cpi = 800;
+            const int sampleCount = 20;
+            const int countsPerSample = 13;
+            long intervalTicks = Math.Max(1L, Stopwatch.Frequency / 1000L);
+            var samples = new List<MouseSample>
+            {
+                new MouseSample { Timestamp = 0, DX = 0, DY = 0 }
+            };
+            long timestamp = 0;
+            for (int i = 0; i < sampleCount; i++)
+            {
+                timestamp += intervalTicks;
+                samples.Add(new MouseSample { Timestamp = timestamp, DX = countsPerSample, DY = 0 });
+            }
+            double flickCm = sampleCount * countsPerSample * DesktopSensConstants.InchesToCm / cpi;
+            var trial = new DesktopSensTrial
+            {
+                TargetDistanceCm = 1.0, NeededDistanceCm = 1.0, FlickDistanceCm = flickCm,
+                DurationMs = sampleCount, EffectiveCpi = cpi, HasMovementMeasurement = true,
+                TargetAngleDegrees = 0.0, RawSamples = samples
+            };
+            var fit = SampleLutFitter.Fit(new List<DesktopSensTrial> { trial }, null, 40, true, null, 1.0);
+            Assert.True(fit.IsValid, fit.FailureReason);
+            Assert.Equal(40, fit.NodeFactors.Length);
+
+            double maxSecondDifference = 0.0;
+            for (int i = 1; i < fit.NodeFactors.Length - 1; i++)
+            {
+                double curvature = Math.Abs(fit.NodeFactors[i + 1] -
+                    2.0 * fit.NodeFactors[i] + fit.NodeFactors[i - 1]);
+                maxSecondDifference = Math.Max(maxSecondDifference, curvature);
+            }
+            Assert.True(maxSecondDifference < 0.08,
+                "Sparse fit must not zigzag; max second difference=" + maxSecondDifference);
+
+            int unsupportedNodes = 0;
+            for (int i = 0; i < fit.NodeSpeedCmPerSec.Length; i++)
+            {
+                if (fit.NodeSpeedCmPerSec[i] < 30.0 || fit.NodeSpeedCmPerSec[i] > 55.0)
+                {
+                    unsupportedNodes++;
+                    Assert.InRange(fit.NodeFactors[i], 0.75, 1.25);
+                }
+            }
+            Assert.True(unsupportedNodes > 0, "Fixture must leave nodes without direct speed support.");
         }
 
         private static DesktopSensTrial MakeSyntheticTrial(

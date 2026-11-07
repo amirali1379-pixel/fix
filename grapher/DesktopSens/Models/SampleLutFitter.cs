@@ -145,24 +145,8 @@ namespace grapher.DesktopSens.Models
             double[,] normal = new double[n, n];
             double[] rhs = new double[n];
 
-            // Ridge prior toward 1.0.
             double nodeDensityScale = (double)n / DesktopSensConstants.SampleLutDefaultNodes;
-            double prior = DesktopSensConstants.SampleLutPriorWeight * Math.Sqrt(Math.Max(1.0, nodeDensityScale));
-            for (int i = 0; i < n; i++)
-            {
-                normal[i, i] += prior;
-                rhs[i] += prior * 1.0;
-            }
-
-            // Smoothness penalty: λ Σ (f_{i+1} - f_i)^2
-            double smooth = DesktopSensConstants.SampleLutSmoothWeight * Math.Max(1.0, nodeDensityScale);
-            for (int i = 0; i < n - 1; i++)
-            {
-                normal[i, i] += smooth;
-                normal[i + 1, i + 1] += smooth;
-                normal[i, i + 1] -= smooth;
-                normal[i + 1, i] -= smooth;
-            }
+            double[] nodeSupport = new double[n];
 
             // Historical optional soft-anchor compatibility path. The
             // DesktopSensProfileMerger sample-fit path passes anchors=null
@@ -239,6 +223,9 @@ namespace grapher.DesktopSens.Models
                 }
                 if (Math.Abs(rowSum) < 1e-9) continue;
 
+                for (int i = 0; i < n; i++)
+                    nodeSupport[i] += weight * Math.Abs(row[i]);
+
                 // Normal equations: A^T W A and A^T W b.
                 for (int i = 0; i < n; i++)
                 {
@@ -248,6 +235,32 @@ namespace grapher.DesktopSens.Models
                         if (Math.Abs(row[j]) >= 1e-12)
                             normal[i, j] += weight * row[i] * row[j];
                 }
+            }
+
+            // Adaptive regularization: unsupported nodes are held near neutral
+            // and smoothed across empty spans. Nodes with real observations
+            // retain lighter penalties so distinct measured speed bands survive.
+            for (int i = 0; i < n; i++)
+            {
+                bool observed = nodeSupport[i] >= DesktopSensConstants.SampleLutNodeMinimumSupportCm;
+                double prior = DesktopSensConstants.SampleLutPriorWeight *
+                    (observed ? DesktopSensConstants.SampleLutObservedNodePriorScale : 1.0) *
+                    Math.Sqrt(Math.Max(1.0, nodeDensityScale));
+                normal[i, i] += prior;
+                rhs[i] += prior;
+            }
+            for (int i = 0; i < n - 1; i++)
+            {
+                bool bothObserved =
+                    nodeSupport[i] >= DesktopSensConstants.SampleLutNodeMinimumSupportCm &&
+                    nodeSupport[i + 1] >= DesktopSensConstants.SampleLutNodeMinimumSupportCm;
+                double smooth = bothObserved
+                    ? DesktopSensConstants.SampleLutObservedSmoothWeight
+                    : DesktopSensConstants.SampleLutSmoothWeight * Math.Max(1.0, nodeDensityScale);
+                normal[i, i] += smooth;
+                normal[i + 1, i + 1] += smooth;
+                normal[i, i + 1] -= smooth;
+                normal[i + 1, i] -= smooth;
             }
 
             // Exact frozen-node constraints. Eliminate frozen variables from
