@@ -1433,7 +1433,6 @@ namespace grapher.DesktopSens.Views
                     _calibTestLog.Add($"  InnerStack: {ex.InnerException.StackTrace}");
                 }
             }
-            var calibrateMergeApplyTimer = System.Diagnostics.Stopwatch.StartNew();
             try
             {
                 DesktopSensCalibrator.Calibrate(_profile);
@@ -1752,6 +1751,7 @@ namespace grapher.DesktopSens.Views
         /// </summary>
         private void RecordTrainingAttempt(DesktopSensTrial trial)
         {
+            var calibrateMergeApplyTimer = System.Diagnostics.Stopwatch.StartNew();
             // FIX 6 (from AI review): explicit logging for discarded
             // trials so the user (or developer) can see — via the
             // "Show Diag Log" button on DesktopSensConfigForm — exactly
