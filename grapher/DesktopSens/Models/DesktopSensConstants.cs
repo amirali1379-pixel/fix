@@ -268,6 +268,12 @@ namespace grapher.DesktopSens.Models
         public const int DivergenceWorseningStreakLimit = 3;
         public const double DivergenceMinimumRelativeWorsening = 0.05;
         public const double DivergenceMinimumRobustErrorCm = 0.25;
+        /// <summary>
+        /// A cell may turn green only when the robust raw (pre-ASDW) flick error
+        /// is within this fixed physical tolerance. Calibration gain can explain
+        /// a consistent error, but must not make a large raw miss look verified.
+        /// </summary>
+        public const double TrainingGreenRawFlickToleranceCm = 1.0;
         // Trial gate for training: reject wandering/aborted flicks before they
         // can update cell statistics, fit samples, verification, or LUT freeze.
         public const double TrainingTrialMaxDurationMs = 4500.0;

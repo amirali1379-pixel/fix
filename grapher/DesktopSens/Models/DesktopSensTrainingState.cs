@@ -93,6 +93,11 @@ namespace grapher.DesktopSens.Models
         public int DivergenceWorseningStreak;
         public double LastDivergenceMetricCm;
 
+        // Raw pre-ASDW signed errors used only for the green/verified quality gate.
+        // Legacy profiles have no history and are safely initialized on first attempt.
+        public List<double> RawFlickErrorHistoryCm = new List<double>();
+        public double RobustRawFlickErrorCm;
+
         public DateTime LastAttemptTimestampUtc;
         public DateTime? FirstRoundCompletedTimestampUtc;
         public DateTime? VerifiedTimestampUtc;
@@ -662,7 +667,8 @@ namespace grapher.DesktopSens.Models
             double angularErrorDegrees = 0.0,
             double targetDistanceCm = 0.0,
             bool sessionBiasApplied = false,
-            double sessionBiasLogGain = 0.0)
+            double sessionBiasLogGain = 0.0,
+            double rawFlickErrorCm = double.NaN)
         {
             if (states == null) return;
             if (double.IsNaN(signedErrorCm) || double.IsInfinity(signedErrorCm))
@@ -755,6 +761,16 @@ namespace grapher.DesktopSens.Models
             // the median of the last K samples; RobustSigmaCm is
             // 1.4826 * MAD.
             UpdateRobustStatistics(state);
+
+            if (!IsFinite(rawFlickErrorCm))
+                rawFlickErrorCm = signedErrorCm; // backward-compatible direct callers
+            if (state.RawFlickErrorHistoryCm == null)
+                state.RawFlickErrorHistoryCm = new List<double>();
+            state.RawFlickErrorHistoryCm.Add(rawFlickErrorCm);
+            while (state.RawFlickErrorHistoryCm.Count > TrainingCellState.MaxStoredHistorySamples)
+                state.RawFlickErrorHistoryCm.RemoveAt(0);
+            state.RobustRawFlickErrorCm = RobustStatistics.Median(state.RawFlickErrorHistoryCm);
+
             UpdateDivergenceTrend(state);
             if (state.IsDiverging)
             {
@@ -929,10 +945,24 @@ namespace grapher.DesktopSens.Models
 
             // Verification: a successful attempt AFTER the first-round was
             // completed → green.
+            bool rawFlickWithinGreenTolerance =
+                state.RawFlickErrorHistoryCm != null &&
+                state.RawFlickErrorHistoryCm.Count >= VerificationExtraSuccessfulAttempts &&
+                Math.Abs(state.RobustRawFlickErrorCm) <=
+                    DesktopSensConstants.TrainingGreenRawFlickToleranceCm;
+
+            if (state.Verified && !rawFlickWithinGreenTolerance)
+            {
+                state.Verified = false;
+                state.VerifiedSessionId = null;
+                state.VerifiedTimestampUtc = null;
+            }
+
             if (state.FirstRoundComplete &&
                 !state.Verified &&
                 state.PrecisionVerified &&
                 !state.SessionRepeatabilityFailed &&
+                rawFlickWithinGreenTolerance &&
                 state.SuccessfulAttemptCount >=
                     MinSuccessfulAttemptsForFirstRound + VerificationExtraSuccessfulAttempts)
             {
