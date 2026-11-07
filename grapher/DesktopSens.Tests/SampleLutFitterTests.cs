@@ -789,15 +789,19 @@ namespace grapher.DesktopSens.Tests
             Assert.True(fit.IsValid, fit.FailureReason);
             Assert.Equal(40, fit.NodeFactors.Length);
 
-            double maxSecondDifference = 0.0;
-            for (int i = 1; i < fit.NodeFactors.Length - 1; i++)
+            int directionChanges = 0;
+            int previousSlopeSign = 0;
+            for (int i = 1; i < fit.NodeFactors.Length; i++)
             {
-                double curvature = Math.Abs(fit.NodeFactors[i + 1] -
-                    2.0 * fit.NodeFactors[i] + fit.NodeFactors[i - 1]);
-                maxSecondDifference = Math.Max(maxSecondDifference, curvature);
+                double slope = fit.NodeFactors[i] - fit.NodeFactors[i - 1];
+                int slopeSign = Math.Abs(slope) < 1e-4 ? 0 : (slope > 0.0 ? 1 : -1);
+                if (slopeSign == 0) continue;
+                if (previousSlopeSign != 0 && slopeSign != previousSlopeSign)
+                    directionChanges++;
+                previousSlopeSign = slopeSign;
             }
-            Assert.True(maxSecondDifference < 0.08,
-                "Sparse fit must not zigzag; max second difference=" + maxSecondDifference);
+            Assert.True(directionChanges <= 2,
+                "Sparse fit must not oscillate; slope direction changes=" + directionChanges);
 
             int unsupportedNodes = 0;
             for (int i = 0; i < fit.NodeSpeedCmPerSec.Length; i++)

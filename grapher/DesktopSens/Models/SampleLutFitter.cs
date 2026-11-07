@@ -251,12 +251,14 @@ namespace grapher.DesktopSens.Models
             }
             for (int i = 0; i < n - 1; i++)
             {
-                bool bothObserved =
-                    nodeSupport[i] >= DesktopSensConstants.SampleLutNodeMinimumSupportCm &&
-                    nodeSupport[i + 1] >= DesktopSensConstants.SampleLutNodeMinimumSupportCm;
-                double smooth = bothObserved
-                    ? DesktopSensConstants.SampleLutObservedSmoothWeight
-                    : DesktopSensConstants.SampleLutSmoothWeight * Math.Max(1.0, nodeDensityScale);
+                bool leftObserved = nodeSupport[i] >= DesktopSensConstants.SampleLutNodeMinimumSupportCm;
+                bool rightObserved = nodeSupport[i + 1] >= DesktopSensConstants.SampleLutNodeMinimumSupportCm;
+                // Do not let a neutral, unsupported neighbour pull a measured
+                // node away from its data. Strong smoothing is confined to
+                // wholly unsupported spans; mixed edges keep the light penalty.
+                double smooth = !leftObserved && !rightObserved
+                    ? DesktopSensConstants.SampleLutSmoothWeight * Math.Max(1.0, nodeDensityScale)
+                    : DesktopSensConstants.SampleLutObservedSmoothWeight;
                 normal[i, i] += smooth;
                 normal[i + 1, i + 1] += smooth;
                 normal[i, i + 1] -= smooth;
