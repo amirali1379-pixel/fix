@@ -286,10 +286,16 @@ namespace grapher.DesktopSens.Models
         /// <summary>Ridge prior on (f - 1) to keep the fit well-behaved when data is sparse.</summary>
         // Strong ridge prior keeps unsupported nodes near neutral on the dense LUT grid.
         public const double SampleLutPriorWeight = 0.05;
+        // Minimum accumulated projected displacement that counts as node support.
+        public const double SampleLutNodeMinimumSupportCm = 0.25;
+        // Observed nodes retain a light prior so sparse regularization does not flatten measured signal.
+        public const double SampleLutObservedNodePriorScale = 0.02;
 
         /// <summary>Smoothness penalty between adjacent nodes.</summary>
         // First-difference penalty; scaled with node density by SampleLutFitter.
         public const double SampleLutSmoothWeight = 0.5;
+        // Adjacent observed nodes use the historical weak smoothness penalty.
+        public const double SampleLutObservedSmoothWeight = 1e-3;
 
         /// <summary>
         /// Anchor weight for previously-verified LUT points. Anchors pin the

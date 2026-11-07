@@ -2279,17 +2279,7 @@ namespace grapher.DesktopSens.Views
                                     "DesktopSens model v12 migration: divergence guard fields initialized " +
                                     "to safe defaults; existing trials and frozen LUT nodes are preserved.");
                             }
-                            if (previousModelVersion < 13)
-                            {
-                                DesktopSensProfileMigration.MigrationResult migration =
-                                    DesktopSensProfileMigration.MigrateToVersion13(profile);
-                                DesktopSensLog.Warn(
-                                    "DesktopSens model v13 migration completed: reviewedCells=" +
-                                    migration.CellsMarkedNeedsReview +
-                                    " rejectedTrials=" + migration.TrialsMarkedRejected +
-                                    " unreviewableLegacyTrials=" + migration.TrialsWithoutRawSamples +
-                                    ". Historical trials were retained; old frozen nodes were discarded.");
-                            }
+
                             // Model v8 stores the Base Sens factor alongside each
                             // sample-fit anchor. Earlier versions cannot reliably
                             // renormalize anchors after a Base Sens change, so discard
@@ -2315,6 +2305,17 @@ namespace grapher.DesktopSens.Views
                                     (trial.MouseDPI > 0 ? trial.MouseDPI : profile.EffectiveCpi);
                                 double maxTurnDistanceCm = ZoneCalculations.MaxDistanceCmForTurnDegrees(trialDpi, trialSensitivity);
                                 trial.DistanceZoneIndex = ZoneCalculations.DistanceToZoneIndex(trial.TargetDistanceCm, maxTurnDistanceCm);
+                            }
+                            if (previousModelVersion < 13)
+                            {
+                                DesktopSensProfileMigration.MigrationResult migration =
+                                    DesktopSensProfileMigration.MigrateToVersion13(profile);
+                                DesktopSensLog.Warn(
+                                    "DesktopSens model v13 migration completed: reviewedCells=" +
+                                    migration.CellsMarkedNeedsReview +
+                                    " rejectedTrials=" + migration.TrialsMarkedRejected +
+                                    " unreviewableLegacyTrials=" + migration.TrialsWithoutRawSamples +
+                                    ". Historical trials were retained; old frozen nodes were discarded.");
                             }
                             DesktopSensCalibrator.Calibrate(profile);
                             // Legacy profiles predate separate Finder/Train trial histories.
