@@ -1443,10 +1443,15 @@ namespace grapher.DesktopSens.Views
                 !trial.WasRejected && _selectedDistanceZone >= 0)
             {
                 int gateStartZone = _selectedDistanceZone - 1;
-                if (TrainingGeometry.Current.UseMidEndPoints && _selectedDistanceZone >= 2)
-                    gateStartZone = (_selectedDistanceZone & 1) == 0
-                        ? _selectedDistanceZone - 1
-                        : _selectedDistanceZone - 2;
+                if (TrainingGeometry.Current.UseMidEndPoints)
+                {
+                    if (_selectedDistanceZone <= 1)
+                        gateStartZone = -1;
+                    else
+                        gateStartZone = (_selectedDistanceZone & 1) == 0
+                            ? _selectedDistanceZone - 1
+                            : _selectedDistanceZone - 2;
+                }
                 double zoneStartCm = gateStartZone >= 0
                     ? TrainingGeometry.Current.MarkerDistanceCm(gateStartZone, _maxDistanceCm)
                     : 0.0;

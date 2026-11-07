@@ -70,6 +70,8 @@ namespace grapher.DesktopSens.Tests
             Assert.True(profile.CellTrainingStates.TryGetValue(DesktopSensProfile.GetCellIndex(0, 7), out var migrated));
             Assert.True(migrated.NeedsReview);
             Assert.Equal(7, profile.Trials[0].DistanceZoneIndex);
+            TrainingGeometry.Configure(10.0, 180.0, 89.0, 30.0,
+                DesktopSensConstants.DefaultZone0SubMarkerCount, false);
         }
 
         [Fact]
