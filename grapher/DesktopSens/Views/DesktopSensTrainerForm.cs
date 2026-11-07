@@ -1394,21 +1394,9 @@ namespace grapher.DesktopSens.Views
                 double factorAtSample = 1.0;
                 if (activeProfile != null && deltaTicks > 0 && sampleCmPerCount > 0.0)
                 {
-                    double dtSec = deltaTicks / (double)Stopwatch.Frequency;
-                    // The live RawAccel engine computes velocity from
-                    // the 2-D vector magnitude. For this calibration snapshot,
-                    // use target-axis projected velocity to match
-                    // SampleLutFitter.ExtractProjectedSamples: the LUT being
-                    // fitted describes displacement along this target axis.
-                    // This is an axis-calibration approximation, not a claim
-                    // that the runtime driver's physical speed metric changed.
-                    double axisX = Math.Cos(targetRadForSampleLut);
-                    double axisY = Math.Sin(targetRadForSampleLut);
-                    double projectedCounts = currSample.DX * axisX +
-                        currSample.DY * axisY;
-                    double speedCmPerSec = Math.Abs(projectedCounts) * sampleCmPerCount /
-                        Math.Max(1e-9, dtSec);
-                    if (IsFiniteValue(speedCmPerSec) && speedCmPerSec > 0.0)
+                    if (SampleLutSampleProcessor.TryProcess(
+                        currSample.DX, currSample.DY, deltaTicks, trial.EffectiveCpi,
+                        targetAngle, out double speedCmPerSec, out _))
                     {
                         double queried = RawAccelSettingsBridge.LookupActiveLutFactorFromProfile(
                             activeProfile, speedCmPerSec, sampleLutAxis);
@@ -1452,6 +1440,56 @@ namespace grapher.DesktopSens.Views
                 maxAngularErrorDegrees: _sensitivityFinderMode
                     ? double.MaxValue
                     : DesktopSensCalibrator.MaxAngularErrorDegrees);
+
+            // Apply the strict gate only to cardinal Train flicks. Sensitivity
+            // Finder keeps its own capture policy and diagnostic/evaluation
+            // trials never alter training state.
+            DesktopSensTrialGateResult trainGateResult = null;
+            if (!_sensitivityFinderMode && _isTrainingMode && !trial.IsEvaluationOnly &&
+                !trial.WasRejected && _selectedDistanceZone >= 0)
+            {
+                double zoneStartCm = _selectedDistanceZone > 0
+                    ? TrainingGeometry.Current.MarkerDistanceCm(
+                        _selectedDistanceZone - 1, _maxDistanceCm)
+                    : 0.0;
+                trainGateResult = DesktopSensTrialGate.Evaluate(
+                    trial, zoneStartCm, _selectedDistanceZone == 0);
+                if (!trainGateResult.Accepted)
+                {
+                    trial.WasRejected = true;
+                    trial.RejectionReason = trainGateResult.Reason;
+                    DesktopSensLog.Warn(
+                        "Train trial gate rejected: reason=" + trainGateResult.Reason +
+                        " rawFlickCm=" + trial.FlickDistanceCm.ToString("0.000") +
+                        " targetCm=" + trial.TargetDistanceCm.ToString("0.000") +
+                        " zoneStartCm=" + zoneStartCm.ToString("0.000") +
+                        " durationMs=" + trial.DurationMs.ToString("0.0"));
+                    string gateMessage;
+                    switch (trainGateResult.Reason)
+                    {
+                        case TrialRejectionReason.DidNotEnterZone:
+                            gateMessage = "فلیک هنوز داخل زون قبلی مانده؛ نقطه‌ی انتهای زون قبلی را دوباره کالیبره کن.";
+                            break;
+                        case TrialRejectionReason.OvershootOutOfRange:
+                            gateMessage = "فلیک بیش از حد از هدف عبور کرد؛ این trial رد شد.";
+                            break;
+                        case TrialRejectionReason.DurationOutOfRange:
+                            gateMessage = "فلیک بیش از حد طولانی یا کوتاه بود؛ یک flick سریع و پیوسته انجام بده.";
+                            break;
+                        case TrialRejectionReason.LongPause:
+                            gateMessage = "وسط فلیک مکث طولانی ثبت شد؛ حرکت را پیوسته انجام بده.";
+                            break;
+                        case TrialRejectionReason.PeakVelocityTooLow:
+                            gateMessage = "سرعت فلیک خیلی کم بود؛ با حرکت سریع‌تر تکرار کن.";
+                            break;
+                        default:
+                            gateMessage = "فلیک برای کالیبراسیون معتبر نبود؛ دوباره تلاش کن.";
+                            break;
+                    }
+                    DesktopSensToast.Show(this, gateMessage);
+                }
+            }
+
 
             DesktopSensLog.Warn(
                 (_sensitivityFinderMode ? "Sensitivity Finder" : "Train") +

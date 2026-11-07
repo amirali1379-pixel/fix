@@ -442,7 +442,7 @@ namespace grapher.DesktopSens.Models
                     bool cellSampleSpeedRangeFrozen = IsSampleFitCellFullyFrozen(profile, zone);
                     if (cellSampleSpeedRangeFrozen)
                     {
-                        factor = GetPriorCellFactor(profile, cellIndex, isBaseDimension,
+                        factor = GetPriorCellFactor(profile, cellIndex, isBaseZoneForCell,
                             priorCellSensitivityFactors, priorCellAccelerationFactors);
                         DesktopSensLog.Info("Sample-fit cell correction skipped: all sample speeds frozen; cell=" +
                             cellIndex + " angleZone=" + zone.AngleZoneIndex +
@@ -515,7 +515,7 @@ namespace grapher.DesktopSens.Models
                         bool cellSampleSpeedRangeFrozen = IsSampleFitCellFullyFrozen(profile, zone);
                         if (cellSampleSpeedRangeFrozen)
                         {
-                            factor = GetPriorCellFactor(profile, cellIndex, isBaseDimension,
+                            factor = GetPriorCellFactor(profile, cellIndex, isBaseZoneForCell,
                                 priorCellSensitivityFactors, priorCellAccelerationFactors);
                             DesktopSensLog.Info("Sample-fit cell correction skipped: all sample speeds frozen; cell=" +
                                 cellIndex + " angleZone=" + zone.AngleZoneIndex +
