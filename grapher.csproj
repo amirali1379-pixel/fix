@@ -220,27 +220,44 @@
       <DesignTimeSharedInput>True</DesignTimeSharedInput>
     </Compile>
         
-        <Compile Include="DesktopSens\Models\RobustStatistics.cs" />
-        <Compile Include="DesktopSens\Models\MicroBoostCurve.cs" />
     <Compile Include="DesktopSens\Models\AccelCurveModels.cs" />
     <Compile Include="DesktopSens\Models\CalibrationCurveCache.cs" />
     <Compile Include="DesktopSens\Models\CalibrationResidualCache.cs" />
-    <Compile Include="DesktopSens\Models\DirectionalCalibrator.cs" />
+    <Compile Include="DesktopSens\Models\CounterbalancedABPlan.cs" />
+    <Compile Include="DesktopSens\Models\DesktopSensCalibrator.cs" />
     <Compile Include="DesktopSens\Models\DesktopSensConstants.cs" />
     <Compile Include="DesktopSens\Models\DesktopSensLog.cs" />
-    <Compile Include="DesktopSens\Models\CounterbalancedABPlan.cs" />
-        <Compile Include="DesktopSens\Models\DesktopSensCalibrator.cs" />
-    <Compile Include="DesktopSens\Models\ZoneCalculations.cs" />
-    <Compile Include="DesktopSens\Models\RotationModel.cs" />
-    <Compile Include="DesktopSens\Models\DesktopSensTrial.cs" />
     <Compile Include="DesktopSens\Models\DesktopSensProfile.cs" />
     <Compile Include="DesktopSens\Models\DesktopSensProfileCopy.cs" />
+    <Compile Include="DesktopSens\Models\DesktopSensProfileMerger.cs" />
+    <Compile Include="DesktopSens\Models\DesktopSensRotationModelFitter.cs" />
+    <Compile Include="DesktopSens\Models\DesktopSensTrainingState.cs" />
     <Compile Include="DesktopSens\Models\DesktopSensTranslator.cs" />
-    <Compile Include="DesktopSens\Input\FlickRecorder.cs" />
-        <Compile Include="DesktopSens\Views\DesktopSensTrainerForm.Training.cs">
-          <DependentUpon>DesktopSensTrainerForm.cs</DependentUpon>
-        </Compile>
-        <Compile Include="DesktopSens\Views\SampleCardinalProfileApplier.cs" />
+    <Compile Include="DesktopSens\Models\DesktopSensTrial.cs" />
+    <Compile Include="DesktopSens\Models\DesktopSensTrialGate.cs" />
+    <Compile Include="DesktopSens\Models\DirectionalCalibrator.cs" />
+    <Compile Include="DesktopSens\Models\MicroBoostCurve.cs" />
+    <Compile Include="DesktopSens\Models\RawAccelSettingsBridge.cs" />
+    <Compile Include="DesktopSens\Models\RobustStatistics.cs" />
+    <Compile Include="DesktopSens\Models\RotationModel.cs" />
+    <Compile Include="DesktopSens\Models\SampleLutFitter.cs" />
+    <Compile Include="DesktopSens\Models\SampleLutSampleProcessor.cs" />
+    <Compile Include="DesktopSens\Models\TrainingGeometry.cs" />
+    <Compile Include="DesktopSens\Models\ZoneCalculations.cs" />
+    <Compile Include="DesktopSens\Views\DesktopSensArena3DControl.cs" />
+    <Compile Include="DesktopSens\Views\DesktopSensConfigForm.cs" />
+    <Compile Include="DesktopSens\Views\DesktopSensToast.cs" />
+    <Compile Include="DesktopSens\Views\DesktopSensTrainerForm.ABTest.cs" />
+    <Compile Include="DesktopSens\Views\DesktopSensTrainerForm.Backup.cs" />
+    <Compile Include="DesktopSens\Views\DesktopSensTrainerForm.Fixes.cs" />
+    <Compile Include="DesktopSens\Views\DesktopSensTrainerForm.NoiseFloor.cs" />
+    <Compile Include="DesktopSens\Views\DesktopSensTrainerForm.Rendering.cs" />
+    <Compile Include="DesktopSens\Views\DesktopSensTrainerForm.Training.cs">
+      <DependentUpon>DesktopSensTrainerForm.cs</DependentUpon>
+    </Compile>
+    <Compile Include="DesktopSens\Views\DesktopSensTrainerForm.cs" />
+    <Compile Include="DesktopSens\Views\Directional8WayForm.cs" />
+    <Compile Include="DesktopSens\Views\SampleCardinalProfileApplier.cs" />
   </ItemGroup>
   <ItemGroup>
     <None Include="App.config" />
