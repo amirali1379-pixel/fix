@@ -80,8 +80,8 @@ namespace grapher.DesktopSens.Tests
         [Fact]
         public void RejectsFlickWithInsufficientPeakSpeed()
         {
-            var trial = MakeTrial(5.0, 0.7, 200.0, new long[] { 100, 100 }, dxCounts: 1);
-            var result = DesktopSensTrialGate.Evaluate(trial, 0.0, true);
+            var trial = MakeTrial(5.0, 1.5, 200.0, new long[] { 100, 100 }, dxCounts: 1);
+            var result = DesktopSensTrialGate.Evaluate(trial, 0.1, false);
             Assert.False(result.Accepted);
             Assert.Equal(TrialRejectionReason.PeakVelocityTooLow, result.Reason);
         }

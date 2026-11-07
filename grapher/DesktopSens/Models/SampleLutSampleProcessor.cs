@@ -56,8 +56,7 @@ namespace grapher.DesktopSens.Models
             double projectedCounts = dxCounts * Math.Cos(angleRad) +
                                      dyCounts * Math.Sin(angleRad);
             projectedDisplacementCm = projectedCounts * cmPerCount;
-            return IsFinite(projectedDisplacementCm) &&
-                   Math.Abs(projectedDisplacementCm) > 1e-12;
+            return IsFinite(projectedDisplacementCm);
         }
 
         /// <summary>Raw, unfiltered 2-D sample speed for diagnostics and gate checks.</summary>

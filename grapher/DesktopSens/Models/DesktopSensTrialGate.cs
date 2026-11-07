@@ -61,10 +61,11 @@ namespace grapher.DesktopSens.Models
                 long deltaTicks = sample.Timestamp - previousTimestamp;
                 previousTimestamp = sample.Timestamp;
 
-                double rawSpeed = SampleLutSampleProcessor.RawSpeedCmPerSec(
-                    sample.DX, sample.DY, deltaTicks, trial.EffectiveCpi);
-                if (IsFinite(rawSpeed) && rawSpeed > peakSpeedCmPerSec)
-                    peakSpeedCmPerSec = rawSpeed;
+                if (SampleLutSampleProcessor.TryProcess(
+                    sample.DX, sample.DY, deltaTicks, trial.EffectiveCpi,
+                    trial.TargetAngleDegrees, out double cleanSpeed, out _)
+                    && cleanSpeed > peakSpeedCmPerSec)
+                    peakSpeedCmPerSec = cleanSpeed;
 
                 // Ignore the initial onset and final release. A long internal
                 // gap is a pause/aborted motion, not a valid continuous flick.

@@ -510,7 +510,8 @@ namespace grapher.DesktopSens.Models
                     trial.TargetAngleDegrees, out double speedCmPerSec,
                     out double displacementCm))
                     continue;
-                resultList.Add((speedCmPerSec, displacementCm));
+                if (Math.Abs(displacementCm) > 1e-12)
+                    resultList.Add((speedCmPerSec, displacementCm));
             }
             return resultList;
         }
