@@ -498,25 +498,19 @@ namespace grapher.DesktopSens.Models
             if (cmPerCount <= 0.0) return resultList;
 
             long previousTimestamp = trial.RawSamples[0].Timestamp;
-            for (int i = 0; i < trial.RawSamples.Count; i++)
+            for (int i = 1; i < trial.RawSamples.Count; i++)
             {
                 MouseSample sample = trial.RawSamples[i];
-                if (i > 0)
-                {
-                    long delta = sample.Timestamp - previousTimestamp;
-                    if (delta <= 0) continue;
-                    double dtSec = delta / (double)Stopwatch.Frequency;
-                    if (dtSec <= 0.0) continue;
-                    double dx = sample.DX;
-                    double dy = sample.DY;
-                    double projCounts = dx * axisX + dy * axisY;
-                    double displacementCm = projCounts * cmPerCount;
-                    double speedCmPerSec = Math.Abs(displacementCm) / dtSec;
-                    if (IsFinite(speedCmPerSec) && speedCmPerSec > 0.0 &&
-                        IsFinite(displacementCm) && displacementCm != 0.0)
-                        resultList.Add((speedCmPerSec, displacementCm));
-                }
+                long delta = sample.Timestamp - previousTimestamp;
+                // Always advance timestamp state. Otherwise a bad interval
+                // would be merged into the next sample and create another spike.
                 previousTimestamp = sample.Timestamp;
+                if (!SampleLutSampleProcessor.TryProcess(
+                    sample.DX, sample.DY, delta, trial.EffectiveCpi,
+                    trial.TargetAngleDegrees, out double speedCmPerSec,
+                    out double displacementCm))
+                    continue;
+                resultList.Add((speedCmPerSec, displacementCm));
             }
             return resultList;
         }

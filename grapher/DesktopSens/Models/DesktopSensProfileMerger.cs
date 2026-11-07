@@ -556,10 +556,19 @@ namespace grapher.DesktopSens.Models
                 // when no sample-fit curve could be produced.
                 if (dir.LutPoints == null || dir.LutPoints.Count == 0)
                 {
-                    DesktopSensLog.Warn(
-                        "Sample-fit produced no curve for angleZone=" + angleZone +
-                        "; falling back to legacy median-speed LUT for stored trials.");
-                    dir.LutPoints = BuildLutPoints(profile, angleZone, distanceZoneCount);
+                    if (HasAcceptedSampleFitTrialForAngleZone(profile, angleZone))
+                    {
+                        DesktopSensLog.Warn(
+                            "Sample-fit produced no curve for angleZone=" + angleZone +
+                            "; falling back to legacy median-speed LUT for stored trials.");
+                        dir.LutPoints = BuildLutPoints(profile, angleZone, distanceZoneCount);
+                    }
+                    else
+                    {
+                        // Empty cardinal directions are normal during progressive
+                        // training. Avoid repeated empty-fit/fallback diagnostics.
+                        dir.LutPoints = new List<LutPoint>();
+                    }
                 }
             }
             else
@@ -589,6 +598,24 @@ namespace grapher.DesktopSens.Models
         /// resulting points are in ascending speed order (faster flicks
         /// land in farther distance zones on average).
         /// </summary>
+        private static bool HasAcceptedSampleFitTrialForAngleZone(
+            DesktopSensProfile profile, int angleZone)
+        {
+            if (profile == null || profile.Trials == null) return false;
+            foreach (var trial in profile.Trials)
+            {
+                if (trial == null || trial.IsEvaluationOnly || trial.IsSessionAnchor ||
+                    trial.IsCalibrationExcluded || trial.WasRejected ||
+                    !trial.HasMovementMeasurement || trial.AngleZoneIndex != angleZone ||
+                    !IsFinite(trial.FlickDistanceCm) || trial.FlickDistanceCm <= 0.0 ||
+                    !IsFinite(trial.DurationMs) || trial.DurationMs <= 0.0)
+                    continue;
+                if (trial.RawSamples != null && trial.RawSamples.Count >= 2)
+                    return true;
+            }
+            return false;
+        }
+
         private static List<LutPoint> BuildLutPoints(
             DesktopSensProfile profile,
             int angleZone,
@@ -1073,35 +1100,31 @@ namespace grapher.DesktopSens.Models
         }
 
         private static List<(double speed, double displacementWeight)> GetProjectedSpeedSamplesForFreeze(
-            DesktopSensTrial trial)
+            DesktopSensTrial trial, List<double> rawSpeedDiagnostics = null)
         {
             var result = new List<(double, double)>();
             if (trial == null || trial.RawSamples == null || trial.RawSamples.Count < 2 ||
                 !IsFinite(trial.EffectiveCpi) || trial.EffectiveCpi <= 0.0)
                 return result;
 
-            // Keep the same target-axis projection and timebase as
-            // SampleLutFitter.ExtractProjectedSamples.
-            double angle = trial.TargetAngleDegrees * Math.PI / 180.0;
-            double axisX = Math.Cos(angle);
-            double axisY = Math.Sin(angle);
-            double cmPerCount = DesktopSensConstants.InchesToCm / trial.EffectiveCpi;
             long previousTimestamp = trial.RawSamples[0].Timestamp;
             for (int i = 1; i < trial.RawSamples.Count; i++)
             {
                 var sample = trial.RawSamples[i];
                 long deltaTicks = sample.Timestamp - previousTimestamp;
-                if (deltaTicks <= 0) continue;
-                double dtSec = deltaTicks / (double)Stopwatch.Frequency;
-                double projectedCounts = sample.DX * axisX + sample.DY * axisY;
-                double displacementCm = projectedCounts * cmPerCount;
-                double speed = Math.Abs(displacementCm) / dtSec;
-                double weight = Math.Abs(displacementCm);
-                if (IsFinite(speed) && speed > 0.0 &&
-                    IsFinite(weight) && weight > 0.0)
-                    result.Add((speed, weight));
-                // Match ExtractProjectedSamples' timestamp progression.
                 previousTimestamp = sample.Timestamp;
+                double rawSpeed = SampleLutSampleProcessor.RawSpeedCmPerSec(
+                    sample.DX, sample.DY, deltaTicks, trial.EffectiveCpi);
+                if (rawSpeedDiagnostics != null && IsFinite(rawSpeed) && rawSpeed > 0.0)
+                    rawSpeedDiagnostics.Add(rawSpeed);
+
+                if (!SampleLutSampleProcessor.TryProcess(
+                    sample.DX, sample.DY, deltaTicks, trial.EffectiveCpi,
+                    trial.TargetAngleDegrees, out double speed, out double displacementCm))
+                    continue;
+                double weight = Math.Abs(displacementCm);
+                if (IsFinite(speed) && speed > 0.0 && IsFinite(weight) && weight > 0.0)
+                    result.Add((speed, weight));
             }
             return result;
         }

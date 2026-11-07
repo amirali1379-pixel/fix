@@ -251,6 +251,15 @@ namespace grapher.DesktopSens.Models
         /// <summary>Speed range for the sample-fit nodes (cm/s).</summary>
         public const double SampleLutMinSpeedCmPerSec = 1.0;
         public const double SampleLutMaxSpeedCmPerSec = 200.0;
+        // Shared cleaning policy for raw-sample LUT fitting and node freeze.
+        // 1 ms rejects high-rate timestamp batching; 300 cm/s is a generous
+        // physical ceiling that keeps isolated timestamp spikes from owning LUT nodes.
+        public const double SampleLutMinimumSampleIntervalMs = 1.0;
+        public const double SampleLutMaximumPhysicalSpeedCmPerSec = 300.0;
+        // If P90 is beyond the top node and implausibly far from the weighted
+        // mean, cap ownership to 3x mean speed so one cell cannot freeze all nodes.
+        public const double SampleLutFreezeP90MeanSpeedRatioLimit = 8.0;
+        public const double SampleLutFreezeFallbackMeanSpeedMultiplier = 3.0;
 
         /// <summary>Ridge prior on (f - 1) to keep the fit well-behaved when data is sparse.</summary>
         public const double SampleLutPriorWeight = 1e-3;
