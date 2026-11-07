@@ -1911,11 +1911,11 @@ namespace grapher.DesktopSens.Models
                 return result;
             }
 
-        internal static TrainingUndoSnapshot Capture(
+        internal static DesktopSensTrainingUndoSnapshot Capture(
                 DesktopSensProfile profile, int[] angleCounts, int[] distanceCounts)
             {
                 if (profile == null) throw new ArgumentNullException(nameof(profile));
-                return new TrainingUndoSnapshot
+                return new DesktopSensTrainingUndoSnapshot
                 {
                     _trialCount = profile.Trials != null ? profile.Trials.Count : 0,
                     _cellTrainingStatesJson = JsonConvert.SerializeObject(

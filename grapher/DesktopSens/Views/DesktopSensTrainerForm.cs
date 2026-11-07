@@ -1544,7 +1544,7 @@ namespace grapher.DesktopSens.Views
                 // Capture only bounded calibration state. Trial history is never
                 // serialized; Undo removes the appended tail trial by count.
                 var undoCaptureTimer = System.Diagnostics.Stopwatch.StartNew();
-                _lastTrialUndoSnapshot = TrainingUndoSnapshot.Capture(
+                _lastTrialUndoSnapshot = DesktopSensTrainingUndoSnapshot.Capture(
                     _profile, _angleZoneCounts, _distanceZoneCounts);
                 undoCaptureTimer.Stop();
                 DesktopSensLog.Info(
