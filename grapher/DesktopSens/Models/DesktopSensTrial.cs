@@ -29,6 +29,7 @@ namespace grapher.DesktopSens.Models
         public const string DidNotEnterZone = "did_not_enter_zone";
         public const string LongPause = "long_pause";
         public const string PeakVelocityTooLow = "peak_velocity_too_low";
+        public const string CellDiverging = "cell_diverging";
     }
 
     public class DesktopSensTrial

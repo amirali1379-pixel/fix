@@ -76,6 +76,15 @@ namespace grapher.DesktopSens.Models
             CalibrationResidualCache.PruneToCellCount(profile, cellCount);
             CalibrationCellResultCache.PruneToCellCount(profile, cellCount);
 
+            double[] priorCellSensitivityFactors = profile.CellSensitivityFactor == null
+                ? null : (double[])profile.CellSensitivityFactor.Clone();
+            double[] priorCellSensitivityConfidence = profile.CellSensitivityConfidence == null
+                ? null : (double[])profile.CellSensitivityConfidence.Clone();
+            double[] priorCellAccelerationFactors = profile.CellAccelerationFactor == null
+                ? null : (double[])profile.CellAccelerationFactor.Clone();
+            double[] priorCellAccelerationConfidence = profile.CellAccelerationConfidence == null
+                ? null : (double[])profile.CellAccelerationConfidence.Clone();
+
             EnsureArray(ref profile.CellSensitivityFactor, cellCount, 1.0);
             EnsureArray(ref profile.CellSensitivityConfidence, cellCount, 0.0);
             EnsureArray(ref profile.CellAccelerationFactor, cellCount, 1.0);
@@ -234,6 +243,17 @@ namespace grapher.DesktopSens.Models
             {
                 int cellIndex = pair.Key;
                 ZoneData zone = pair.Value;
+
+                if (profile.CellTrainingStates != null &&
+                    profile.CellTrainingStates.TryGetValue(cellIndex, out TrainingCellState divergenceState) &&
+                    divergenceState != null && divergenceState.IsDiverging)
+                {
+                    RestorePriorCellFactor(profile.CellSensitivityFactor, priorCellSensitivityFactors, cellIndex, 1.0);
+                    RestorePriorCellFactor(profile.CellSensitivityConfidence, priorCellSensitivityConfidence, cellIndex, 0.0);
+                    RestorePriorCellFactor(profile.CellAccelerationFactor, priorCellAccelerationFactors, cellIndex, 1.0);
+                    RestorePriorCellFactor(profile.CellAccelerationConfidence, priorCellAccelerationConfidence, cellIndex, 0.0);
+                    continue;
+                }
 
                 // Reconstruct every residual from raw trial data and the
                 // exact active LUT factor captured with that trial. The
@@ -419,11 +439,25 @@ namespace grapher.DesktopSens.Models
                     // NEW (Model v10, magnitude-aware slope boost): apply the
                     // same sign-aware, magnitude-aware boost to base-dimension
                     // cells.
-                    factor = ApplyMagnitudeSlopeBoost(factor, zone);
+                    bool cellSampleSpeedRangeFrozen = IsSampleFitCellFullyFrozen(profile, zone);
+                    if (cellSampleSpeedRangeFrozen)
+                    {
+                        factor = GetPriorCellFactor(profile, cellIndex, isBaseDimension,
+                            priorCellSensitivityFactors, priorCellAccelerationFactors);
+                        DesktopSensLog.Info("Sample-fit cell correction skipped: all sample speeds frozen; cell=" +
+                            cellIndex + " angleZone=" + zone.AngleZoneIndex +
+                            " distanceZone=" + zone.DistanceZoneIndex);
+                    }
+                    else
+                    {
+                        factor = ApplyMagnitudeSlopeBoost(factor, zone);
+                    }
 
                     // NEW (Model v10, adaptive convergence): same adaptive
                     // interpolation as the excess-dimension path.
-                    factor = ApplyAdaptiveConvergence(profile, cellIndex, factor, zone);
+                    if (!cellSampleSpeedRangeFrozen)
+                        factor = ApplyAdaptiveConvergence(profile, cellIndex, factor, zone,
+                            priorCellSensitivityFactors, priorCellAccelerationFactors);
 
                     profile.CellSensitivityFactor[cellIndex] = factor;
                     double precisionConfidence = hasLogGain
@@ -1076,6 +1110,12 @@ namespace grapher.DesktopSens.Models
             double magnitudeTerm = coefficient * Math.Pow(magnitude, power);
             double boost = -Math.Sign(meanSignedError) * magnitudeTerm;
 
+            int acceptedCount = zone.ExcessSignedErrors != null
+                ? Math.Max(1, zone.ExcessSignedErrors.Count) : 1;
+            double perTrialLimit = DesktopSensConstants.SampleLutMaxRelativeCellFactorStep * acceptedCount;
+            if (magnitudeTerm > perTrialLimit) magnitudeTerm = perTrialLimit;
+            boost = -Math.Sign(meanSignedError) * magnitudeTerm;
+
             // Clamp the boost magnitude to the configured maximum.
             double maxBoost = DesktopSensConstants.MagnitudeSlopeMaxBoost;
             if (boost > maxBoost) boost = maxBoost;
@@ -1116,7 +1156,9 @@ namespace grapher.DesktopSens.Models
             DesktopSensProfile profile,
             int cellIndex,
             double newEstimate,
-            ZoneData zone)
+            ZoneData zone,
+            double[] priorCellSensitivityFactors,
+            double[] priorCellAccelerationFactors)
         {
             if (profile == null || !IsFinite(newEstimate) || newEstimate <= 0.0)
                 return newEstimate;
@@ -1129,13 +1171,23 @@ namespace grapher.DesktopSens.Models
             // AccelerationFactor for excess zones.
             bool isBaseDimension = TrainingGeometry.Current.ZoneCenterCm(zone.DistanceZoneIndex)
                 <= DesktopSensConstants.BaseZoneEndCm;
-            double prior = isBaseDimension
-                ? (profile.CellSensitivityFactor != null &&
-                   cellIndex >= 0 && cellIndex < profile.CellSensitivityFactor.Length
-                    ? profile.CellSensitivityFactor[cellIndex] : DesktopSensConstants.AdaptiveInitialFactor)
-                : (profile.CellAccelerationFactor != null &&
-                   cellIndex >= 0 && cellIndex < profile.CellAccelerationFactor.Length
-                    ? profile.CellAccelerationFactor[cellIndex] : DesktopSensConstants.AdaptiveInitialFactor);
+            double prior = DesktopSensConstants.AdaptiveInitialFactor;
+            if (profile.UseSampleFitLut)
+            {
+                double[] priorValues = isBaseDimension ? priorCellSensitivityFactors : priorCellAccelerationFactors;
+                if (priorValues != null && cellIndex >= 0 && cellIndex < priorValues.Length)
+                    prior = priorValues[cellIndex];
+            }
+            else
+            {
+                prior = isBaseDimension
+                    ? (profile.CellSensitivityFactor != null &&
+                       cellIndex >= 0 && cellIndex < profile.CellSensitivityFactor.Length
+                        ? profile.CellSensitivityFactor[cellIndex] : DesktopSensConstants.AdaptiveInitialFactor)
+                    : (profile.CellAccelerationFactor != null &&
+                       cellIndex >= 0 && cellIndex < profile.CellAccelerationFactor.Length
+                        ? profile.CellAccelerationFactor[cellIndex] : DesktopSensConstants.AdaptiveInitialFactor);
+            }
 
             // If the prior is not finite or non-positive, start neutral.
             if (!IsFinite(prior) || prior <= 0.0)
@@ -1174,11 +1226,73 @@ namespace grapher.DesktopSens.Models
             // tondtar mikoneh ta jai ke barnameh crash mikoneh" — the first
             // point must NOT crash the program. The cap makes the first
             // train safe; subsequent trains refine the factor inside the cap.
+            if (profile.UseSampleFitLut)
+            {
+                double maxStep = prior * DesktopSensConstants.SampleLutMaxRelativeCellFactorStep;
+                adaptiveFactor = Math.Max(prior - maxStep, Math.Min(prior + maxStep, adaptiveFactor));
+            }
             if (adaptiveFactor > DesktopSensConstants.AdaptiveFactorMax)
                 adaptiveFactor = DesktopSensConstants.AdaptiveFactorMax;
             if (adaptiveFactor < DesktopSensConstants.AdaptiveFactorMin)
                 adaptiveFactor = DesktopSensConstants.AdaptiveFactorMin;
             return adaptiveFactor;
+        }
+
+        private static void RestorePriorCellFactor(double[] destination, double[] prior, int cellIndex, double fallback)
+        {
+            if (destination == null || cellIndex < 0 || cellIndex >= destination.Length) return;
+            double value = prior != null && cellIndex < prior.Length ? prior[cellIndex] : fallback;
+            destination[cellIndex] = IsFinite(value) ? value : fallback;
+        }
+
+        private static double GetPriorCellFactor(
+            DesktopSensProfile profile, int cellIndex, bool isBaseDimension,
+            double[] priorSensitivity, double[] priorAcceleration)
+        {
+            double[] prior = isBaseDimension ? priorSensitivity : priorAcceleration;
+            double value = prior != null && cellIndex >= 0 && cellIndex < prior.Length
+                ? prior[cellIndex] : DesktopSensConstants.AdaptiveInitialFactor;
+            return IsFinite(value) && value > 0.0 ? value : DesktopSensConstants.AdaptiveInitialFactor;
+        }
+
+        private static bool IsSampleFitCellFullyFrozen(DesktopSensProfile profile, ZoneData zone)
+        {
+            if (profile == null || !profile.UseSampleFitLut || zone == null ||
+                zone.Trials == null || zone.Trials.Count == 0 ||
+                profile.FrozenSampleLutNodeFactorsByAngleZone == null ||
+                !profile.FrozenSampleLutNodeFactorsByAngleZone.TryGetValue(zone.AngleZoneIndex, out double[] frozen) ||
+                frozen == null || frozen.Length != DesktopSensConstants.SampleLutDefaultNodes)
+                return false;
+            double logMin = Math.Log(DesktopSensConstants.SampleLutMinSpeedCmPerSec);
+            double logMax = Math.Log(DesktopSensConstants.SampleLutMaxSpeedCmPerSec);
+            bool sawUsableSample = false;
+            foreach (DesktopSensTrial trial in zone.Trials)
+            {
+                if (trial == null || trial.RawSamples == null) continue;
+                foreach (SampleLutCachedSample sample in SampleLutSampleProcessor.GetCachedSamples(trial))
+                {
+                    if (!sample.IsUsable || !IsFinite(sample.SpeedCmPerSec) || sample.SpeedCmPerSec <= 0.0)
+                        continue;
+                    sawUsableSample = true;
+                    double speed = sample.SpeedCmPerSec;
+                    if (speed <= DesktopSensConstants.SampleLutMinSpeedCmPerSec)
+                    {
+                        if (frozen[0] <= 0.0) return false;
+                        continue;
+                    }
+                    if (speed >= DesktopSensConstants.SampleLutMaxSpeedCmPerSec)
+                    {
+                        if (frozen[frozen.Length - 1] <= 0.0) return false;
+                        continue;
+                    }
+                    double u = (Math.Log(speed) - logMin) / Math.Max(1e-9, logMax - logMin);
+                    double pos = u * (frozen.Length - 1);
+                    int node0 = (int)Math.Floor(pos);
+                    int node1 = Math.Min(frozen.Length - 1, node0 + 1);
+                    if (frozen[node0] <= 0.0 || frozen[node1] <= 0.0) return false;
+                }
+            }
+            return sawUsableSample;
         }
 
         private static bool IsFinite(double value)

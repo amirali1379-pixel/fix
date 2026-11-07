@@ -117,7 +117,7 @@ namespace grapher.DesktopSens.Models
         // CalibrationResidualCache entries written under v8/v9 (which used the
         // raw TargetDistanceCm in zone aggregation) must not be reused — the
         // aggregated targets differ, so any cached factor is invalid.
-        public const int CurrentModelVersion = 11;
+        public const int CurrentModelVersion = 12;
 
         // Shared calibration defaults and physical thresholds.
         public const double NeutralFactor = 1.0;
@@ -262,6 +262,12 @@ namespace grapher.DesktopSens.Models
         // mean, cap ownership to 3x mean speed so one cell cannot freeze all nodes.
         public const double SampleLutFreezeP90MeanSpeedRatioLimit = 8.0;
         public const double SampleLutFreezeFallbackMeanSpeedMultiplier = 3.0;
+        /// <summary>Maximum relative per-calibration update of an unfrozen cell factor.</summary>
+        public const double SampleLutMaxRelativeCellFactorStep = 0.20;
+        /// <summary>Three successive robust-error increases of at least 5% indicate divergence.</summary>
+        public const int DivergenceWorseningStreakLimit = 3;
+        public const double DivergenceMinimumRelativeWorsening = 0.05;
+        public const double DivergenceMinimumRobustErrorCm = 0.25;
         // Trial gate for training: reject wandering/aborted flicks before they
         // can update cell statistics, fit samples, verification, or LUT freeze.
         public const double TrainingTrialMaxDurationMs = 4500.0;

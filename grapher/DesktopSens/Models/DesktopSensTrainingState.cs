@@ -87,6 +87,12 @@ namespace grapher.DesktopSens.Models
         /// </summary>
         public bool Verified;
 
+        // Persisted guard against a cell whose robust error worsens repeatedly.
+        // Missing fields in pre-v12 JSON deserialize to false/zero.
+        public bool IsDiverging;
+        public int DivergenceWorseningStreak;
+        public double LastDivergenceMetricCm;
+
         public DateTime LastAttemptTimestampUtc;
         public DateTime? FirstRoundCompletedTimestampUtc;
         public DateTime? VerifiedTimestampUtc;
@@ -749,6 +755,19 @@ namespace grapher.DesktopSens.Models
             // the median of the last K samples; RobustSigmaCm is
             // 1.4826 * MAD.
             UpdateRobustStatistics(state);
+            UpdateDivergenceTrend(state);
+            if (state.IsDiverging)
+            {
+                state.Verified = false;
+                state.PrecisionVerified = false;
+                state.VerifiedSessionId = null;
+                state.VerifiedTimestampUtc = null;
+                DesktopSensLog.Warn("Training cell marked diverging: angleZone=" +
+                    angleZoneIndex + " distanceZone=" + distanceZoneIndex +
+                    " robustErrorCm=" + state.RobustSignedErrorCm.ToString("+0.000;-0.000;0.000") +
+                    " worseningStreak=" + state.DivergenceWorseningStreak);
+                return;
+            }
 
             // With BaseZoneEndCm = 0.0, isBaseDimension is always false
             // (every zone center is > 0), so the gain is always estimated
@@ -1222,6 +1241,27 @@ namespace grapher.DesktopSens.Models
             }
             state.RobustSignedErrorCm = RobustStatistics.Median(state.SignedErrorHistoryCm);
             state.RobustSigmaCm = RobustStatistics.RobustSigma(state.SignedErrorHistoryCm);
+        }
+
+        private static void UpdateDivergenceTrend(TrainingCellState state)
+        {
+            if (state == null || state.IsDiverging) return;
+            double metric = Math.Abs(state.RobustSignedErrorCm);
+            if (!IsFinite(metric) || metric < DesktopSensConstants.DivergenceMinimumRobustErrorCm)
+            {
+                state.DivergenceWorseningStreak = 0;
+                state.LastDivergenceMetricCm = IsFinite(metric) ? metric : 0.0;
+                return;
+            }
+            double previous = state.LastDivergenceMetricCm;
+            if (previous >= DesktopSensConstants.DivergenceMinimumRobustErrorCm &&
+                metric > previous * (1.0 + DesktopSensConstants.DivergenceMinimumRelativeWorsening))
+                state.DivergenceWorseningStreak++;
+            else
+                state.DivergenceWorseningStreak = 0;
+            state.LastDivergenceMetricCm = metric;
+            if (state.DivergenceWorseningStreak >= DesktopSensConstants.DivergenceWorseningStreakLimit)
+                state.IsDiverging = true;
         }
 
         /// <summary>

@@ -852,7 +852,7 @@ namespace grapher.DesktopSens.Models
                 int cellIndex = DesktopSensProfile.GetCellIndex(angleZone, trial.DistanceZoneIndex);
                 if (profile.CellTrainingStates == null ||
                     !profile.CellTrainingStates.TryGetValue(cellIndex, out var state) ||
-                    state == null) continue;
+                    state == null || state.IsDiverging) continue;
 
                 bool isGreen = state.Verified && state.PrecisionVerified;
                 bool isYellow = !isGreen && state.AcceptedAttemptCount > 0;

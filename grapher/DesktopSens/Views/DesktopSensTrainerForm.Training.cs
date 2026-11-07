@@ -1433,6 +1433,7 @@ namespace grapher.DesktopSens.Views
                     _calibTestLog.Add($"  InnerStack: {ex.InnerException.StackTrace}");
                 }
             }
+            var calibrateMergeApplyTimer = System.Diagnostics.Stopwatch.StartNew();
             try
             {
                 DesktopSensCalibrator.Calibrate(_profile);
@@ -1921,13 +1922,30 @@ namespace grapher.DesktopSens.Views
                     signedError = observed * Math.Exp(-sessionBias) - effectiveTargetCm;
             }
 
+            int cellIndex = DesktopSensProfile.GetCellIndex(angleZone, _selectedDistanceZone);
+            if (_profile.CellTrainingStates.TryGetValue(cellIndex, out var existingCellState) &&
+                existingCellState != null && existingCellState.IsDiverging)
+            {
+                trial.IsCalibrationExcluded = true;
+                trial.WasRejected = true;
+                trial.RejectionReason = TrialRejectionReason.CellDiverging;
+                DesktopSensTrainingState.RecordRejectedAttempt(
+                    _profile.CellTrainingStates, angleZone, _selectedDistanceZone,
+                    trial.SignedErrorCm, DateTime.UtcNow, _profile.CurrentSessionId);
+                DesktopSensLog.Warn("Training trial blocked: selected cell is diverging; cell=" + cellIndex);
+                DesktopSensToast.Show(this, "این نقطه واگرا شده؛ برای ادامه Undo یا Reset همین نقطه را انجام بده.");
+                OnCellVerifiedPersistProfile();
+                UpdateTrainingArenaProperties();
+                UpdateTrainingHud();
+                return;
+            }
+
             // Capture the previous verified-flag so we can detect the
             // yellow→green transition and trigger an explicit save. The
             // user explained: "when a point becomes green, it must be
             // saved" — so the chain is persisted immediately, not just on
             // trainer close. Without an immediate save, a crash or trainer
             // close mid-axis would lose the verified cells.
-            int cellIndex = DesktopSensProfile.GetCellIndex(angleZone, _selectedDistanceZone);
             bool wasVerifiedBefore = false;
             bool wasPrecisionVerifiedBefore = false;
             bool wasFirstRoundBefore = false;
@@ -1955,6 +1973,22 @@ namespace grapher.DesktopSens.Views
                 sessionBiasApplied: sessionBiasApplied,
                 sessionBiasLogGain: sessionBiasApplied ? sessionBias : 0.0);
 
+            if (_profile.CellTrainingStates.TryGetValue(cellIndex, out var newlyDivergingState) &&
+                newlyDivergingState != null && newlyDivergingState.IsDiverging)
+            {
+                trial.IsCalibrationExcluded = true;
+                trial.WasRejected = true;
+                trial.RejectionReason = TrialRejectionReason.CellDiverging;
+                DesktopSensLog.Warn("Training cell divergence detected; freezing further updates: cell=" +
+                    cellIndex + " robustErrorCm=" + newlyDivergingState.RobustSignedErrorCm.ToString("0.000") +
+                    " streak=" + newlyDivergingState.DivergenceWorseningStreak);
+                DesktopSensToast.Show(this, "خطای این نقطه در چند trial پیاپی بدتر شد؛ کالیبراسیون متوقف شد. Undo/Reset نقطه را پیشنهاد می‌کنم.");
+                OnCellVerifiedPersistProfile();
+                UpdateTrainingArenaProperties();
+                UpdateTrainingHud();
+                return;
+            }
+
             // NEW (Model v6): capture the cell's previous acceleration factor so
             // we can detect a >1% change after Calibrate() runs. Previously a
             // cell could improve its factor over many trials without ever
@@ -1971,22 +2005,35 @@ namespace grapher.DesktopSens.Views
             try
             {
                 DesktopSensCalibrator.Calibrate(_profile);
-                double trainFactor = cellIndex >= 0 &&
-                    _profile.CellSensitivityFactor != null &&
-                    cellIndex < _profile.CellSensitivityFactor.Length
+                double sensitivityFactorForLog = cellIndex >= 0 &&
+                    _profile.CellSensitivityFactor != null && cellIndex < _profile.CellSensitivityFactor.Length
                         ? _profile.CellSensitivityFactor[cellIndex] : 1.0;
-                double trainConfidence = cellIndex >= 0 &&
-                    _profile.CellSensitivityConfidence != null &&
-                    cellIndex < _profile.CellSensitivityConfidence.Length
+                double sensitivityConfidenceForLog = cellIndex >= 0 &&
+                    _profile.CellSensitivityConfidence != null && cellIndex < _profile.CellSensitivityConfidence.Length
                         ? _profile.CellSensitivityConfidence[cellIndex] : 0.0;
+                double accelerationFactorForLog = cellIndex >= 0 &&
+                    _profile.CellAccelerationFactor != null && cellIndex < _profile.CellAccelerationFactor.Length
+                        ? _profile.CellAccelerationFactor[cellIndex] : 1.0;
+                double accelerationConfidenceForLog = cellIndex >= 0 &&
+                    _profile.CellAccelerationConfidence != null && cellIndex < _profile.CellAccelerationConfidence.Length
+                        ? _profile.CellAccelerationConfidence[cellIndex] : 0.0;
+                bool isBaseDimensionForLog = TrainingGeometry.Current.ZoneCenterCm(_selectedDistanceZone)
+                    <= DesktopSensConstants.BaseZoneEndCm;
+                double trainFactor = isBaseDimensionForLog ? sensitivityFactorForLog : accelerationFactorForLog;
+                double trainConfidence = isBaseDimensionForLog ? sensitivityConfidenceForLog : accelerationConfidenceForLog;
                 TrainingCellState diagnosticState = null;
                 if (_profile.CellTrainingStates != null)
                     _profile.CellTrainingStates.TryGetValue(cellIndex, out diagnosticState);
                 DesktopSensLog.Warn(
                     "Train calibration recomputed: cell=" + cellIndex +
                     " trials=" + _profile.Trials.Count +
+                    " factorKind=" + (isBaseDimensionForLog ? "sensitivity" : "acceleration") +
                     " factor=" + trainFactor.ToString("0.000") +
                     " confidence=" + trainConfidence.ToString("0.000") +
+                    " sensFactor=" + sensitivityFactorForLog.ToString("0.000") +
+                    " sensConfidence=" + sensitivityConfidenceForLog.ToString("0.000") +
+                    " accelFactor=" + accelerationFactorForLog.ToString("0.000") +
+                    " accelConfidence=" + accelerationConfidenceForLog.ToString("0.000") +
                     " rawError=" + signedError.ToString("+0.000;-0.000;0.000") +
                     " robustRawError=" + (diagnosticState != null
                         ? diagnosticState.RobustSignedErrorCm.ToString("+0.000;-0.000;0.000") : "n/a") +
@@ -2139,12 +2186,71 @@ namespace grapher.DesktopSens.Views
                     // The merge result is logged to DesktopSensLog so
                     // the user can verify via "Show Diag Log".
                     TryMergeAndApply(false);
+                    LogSampleFitApplyDiagnostics();
                 }
             }
             catch (Exception ex)
             {
                 DesktopSensLog.Warn("Auto-merge after trial failed (non-fatal)", ex);
             }
+            calibrateMergeApplyTimer.Stop();
+            DesktopSensLog.Info("Train Calibrate+Merge+Apply elapsedMs=" +
+                calibrateMergeApplyTimer.Elapsed.TotalMilliseconds.ToString("0.0") +
+                " trialCount=" + _profile.Trials.Count);
+        }
+
+        private void LogSampleFitApplyDiagnostics()
+        {
+            if (_profile == null) return;
+            if (_profile.LastBuiltLutPointsByAngleZone != null)
+            {
+                foreach (var entry in _profile.LastBuiltLutPointsByAngleZone)
+                {
+                    if (entry.Value == null) continue;
+                    var x = new List<string>();
+                    var y = new List<string>();
+                    foreach (LutPoint point in entry.Value)
+                    {
+                        x.Add(point.InputSpeedCmPerSec.ToString("0.00"));
+                        y.Add(point.Factor.ToString("0.000"));
+                    }
+                    DesktopSensLog.Info("SampleLut Apply axisZone=" + entry.Key +
+                        " nodeXcmPerSec=[" + string.Join(",", x) + "] nodeY=[" +
+                        string.Join(",", y) + "]");
+                }
+            }
+            object activeProfile = null;
+            try { activeProfile = _activeProfileProvider != null ? _activeProfileProvider() : null; }
+            catch (Exception ex) { DesktopSensLog.Warn("Could not read active RawAccel profile for smoothing diagnostics", ex); }
+            DesktopSensLog.Info("RawAccel smoothing on Apply: input_speed_smooth_halflife=" +
+                ReadProfileDiagnosticValue(activeProfile, "input_speed_smooth_halflife") +
+                " scale_smooth_halflife=" + ReadProfileDiagnosticValue(activeProfile, "scale_smooth_halflife") +
+                " output_speed_smooth_halflife=" + ReadProfileDiagnosticValue(activeProfile, "output_speed_smooth_halflife"));
+        }
+
+        private static string ReadProfileDiagnosticValue(object profile, string name)
+        {
+            if (profile == null) return "n/a";
+            try
+            {
+                var type = profile.GetType();
+                var field = type.GetField(name, System.Reflection.BindingFlags.Instance |
+                    System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic);
+                if (field != null)
+                {
+                    object value = field.GetValue(profile);
+                    return value != null ? Convert.ToString(value, System.Globalization.CultureInfo.InvariantCulture) : "null";
+                }
+                var property = type.GetProperty(name, System.Reflection.BindingFlags.Instance |
+                    System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic);
+                if (property != null)
+                {
+                    object value = property.GetValue(profile, null);
+                    return value != null ? Convert.ToString(value, System.Globalization.CultureInfo.InvariantCulture) : "null";
+                }
+            }
+            catch { }
+            return "n/a";
         }
 
         /// <summary>

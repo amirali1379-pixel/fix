@@ -2273,6 +2273,12 @@ namespace grapher.DesktopSens.Views
                                         "freeze from their historical trials on first sample-fit LUT build.");
                                 CalibrationResidualCache.Clear(profile);
                             }
+                            if (previousModelVersion < 12)
+                            {
+                                DesktopSensLog.Info(
+                                    "DesktopSens model v12 migration: divergence guard fields initialized " +
+                                    "to safe defaults; existing trials and frozen LUT nodes are preserved.");
+                            }
                             // Model v8 stores the Base Sens factor alongside each
                             // sample-fit anchor. Earlier versions cannot reliably
                             // renormalize anchors after a Base Sens change, so discard
