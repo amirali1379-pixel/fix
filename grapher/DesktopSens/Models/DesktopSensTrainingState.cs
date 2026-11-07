@@ -982,6 +982,7 @@ namespace grapher.DesktopSens.Models
                     MinSuccessfulAttemptsForFirstRound + VerificationExtraSuccessfulAttempts)
             {
                 state.Verified = true;
+                state.NeedsReview = false;
                 state.VerifiedTimestampUtc = timestampUtc;
                 state.VerifiedSessionId = sessionId;
                 state.DriftDetected = false;
@@ -1720,13 +1721,40 @@ namespace grapher.DesktopSens.Models
             int distanceZoneIndex)
         {
             if (profile == null) return false;
-            bool removed = ResetCell(
-                profile.CellTrainingStates, angleZoneIndex, distanceZoneIndex);
+            int distanceCount = TrainingGeometry.Current.DistanceZoneCount;
+            bool removed = ResetCell(profile.CellTrainingStates, angleZoneIndex, distanceZoneIndex);
+
+            // Delete only the selected cell's trials. Later observations remain
+            // available for audit, but their verification is revoked because the
+            // upstream LUT boundary they depended on has changed.
+            if (profile.Trials != null)
+                profile.Trials.RemoveAll(trial => trial != null &&
+                    trial.AngleZoneIndex == angleZoneIndex &&
+                    trial.DistanceZoneIndex == distanceZoneIndex);
+
+            int affectedGreen = 0;
+            if (profile.CellTrainingStates != null)
+            {
+                for (int distance = distanceZoneIndex + 1; distance < distanceCount; distance++)
+                {
+                    int laterIndex = GetCellIndex(angleZoneIndex, distance);
+                    if (!profile.CellTrainingStates.TryGetValue(laterIndex, out var laterState) ||
+                        laterState == null || (!laterState.Verified && !laterState.PrecisionVerified))
+                        continue;
+                    laterState.Verified = false;
+                    laterState.PrecisionVerified = false;
+                    laterState.NeedsReview = true;
+                    laterState.VerifiedSessionId = null;
+                    laterState.VerifiedTimestampUtc = null;
+                    affectedGreen++;
+                }
+            }
+
             DesktopSensProfileMerger.UnfreezeSampleLutFromCell(
                 profile, angleZoneIndex, distanceZoneIndex);
             CalibrationResidualCache.Clear(profile);
-            DesktopSensLog.Info("Profile-aware reset of cell: angleZone=" +
-                angleZoneIndex + " distanceZone=" + distanceZoneIndex);
+            DesktopSensLog.Warn("Profile-aware cell reset: angleZone=" + angleZoneIndex +
+                " distanceZone=" + distanceZoneIndex + " laterGreenNeedsReview=" + affectedGreen);
             return removed;
         }
 
