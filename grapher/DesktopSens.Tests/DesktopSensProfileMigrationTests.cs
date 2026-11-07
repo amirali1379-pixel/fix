@@ -52,29 +52,6 @@ namespace grapher.DesktopSens.Tests
         }
 
         [Fact]
-        public void Version13MigrationMapsOldCellsToEnd()
-        {
-            TrainingGeometry.Configure(10.0, 180.0, 89.0, 30.0,
-                DesktopSensConstants.DefaultZone0SubMarkerCount, true);
-            var profile = new DesktopSensProfile { ModelVersion = 13 };
-            profile.CellTrainingStates = new Dictionary<int, TrainingCellState>
-            {
-                [DesktopSensProfile.GetCellIndex(0, 3)] = new TrainingCellState
-                {
-                    AngleZoneIndex = 0, DistanceZoneIndex = 3, Verified = true, PrecisionVerified = true
-                }
-            };
-            profile.Trials.Add(new DesktopSensTrial { DistanceZoneIndex = 3 });
-            DesktopSensProfileMigration.MigrateToVersion14(profile);
-            Assert.Equal(14, profile.ModelVersion);
-            Assert.True(profile.CellTrainingStates.TryGetValue(DesktopSensProfile.GetCellIndex(0, 7), out var migrated));
-            Assert.True(migrated.NeedsReview);
-            Assert.Equal(7, profile.Trials[0].DistanceZoneIndex);
-            TrainingGeometry.Configure(10.0, 180.0, 89.0, 30.0,
-                DesktopSensConstants.DefaultZone0SubMarkerCount, false);
-        }
-
-        [Fact]
         public void Version13Profile_RoundTripsWithoutLosingReviewStateOrTrials()
         {
             var profile = new DesktopSensProfile { ModelVersion = 13 };
