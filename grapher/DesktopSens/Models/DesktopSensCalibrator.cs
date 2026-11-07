@@ -512,7 +512,19 @@ namespace grapher.DesktopSens.Models
                         // magnitude matters (a 4-cm under-flick in zone 2
                         // produces the same boost as a 4-cm under-flick in
                         // zone 8).
-                        factor = ApplyMagnitudeSlopeBoost(factor, zone);
+                        bool cellSampleSpeedRangeFrozen = IsSampleFitCellFullyFrozen(profile, zone);
+                        if (cellSampleSpeedRangeFrozen)
+                        {
+                            factor = GetPriorCellFactor(profile, cellIndex, isBaseDimension,
+                                priorCellSensitivityFactors, priorCellAccelerationFactors);
+                            DesktopSensLog.Info("Sample-fit cell correction skipped: all sample speeds frozen; cell=" +
+                                cellIndex + " angleZone=" + zone.AngleZoneIndex +
+                                " distanceZone=" + zone.DistanceZoneIndex);
+                        }
+                        else
+                        {
+                            factor = ApplyMagnitudeSlopeBoost(factor, zone);
+                        }
 
                         // NEW (Model v10, adaptive convergence): instead of
                         // storing the freshly-computed factor directly, blend
@@ -535,7 +547,9 @@ namespace grapher.DesktopSens.Models
                         // INCREASES. This is what the user asked for: zone N
                         // might converge to 1.23 (under-flick) while zone N+1
                         // converges to 0.24 (over-flick) at the same time.
-                        factor = ApplyAdaptiveConvergence(profile, cellIndex, factor, zone);
+                        if (!cellSampleSpeedRangeFrozen)
+                            factor = ApplyAdaptiveConvergence(profile, cellIndex, factor, zone,
+                                priorCellSensitivityFactors, priorCellAccelerationFactors);
 
                         profile.CellAccelerationFactor[cellIndex] = factor;
                         double precisionConfidence = hasExcessLogGain
