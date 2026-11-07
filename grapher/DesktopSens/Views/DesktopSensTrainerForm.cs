@@ -211,7 +211,9 @@ namespace grapher.DesktopSens.Views
                 markerStepDegrees,
                 TrainingMaxAxisDegrees,
                 MaxPitchDegrees,
-                _maxDistanceCm);
+                _maxDistanceCm,
+                DesktopSensConstants.DefaultZone0SubMarkerCount,
+                _profile.CalibrationDirectionCount == 4 && _profile.UseSampleFitLut);
 
             // The _distanceZoneCounts field was sized at field-initializer
             // time (before the constructor body ran) using the legacy

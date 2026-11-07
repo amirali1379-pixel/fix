@@ -578,9 +578,11 @@ namespace grapher.DesktopSens.Models
             int zoneCount = cardinalIndex >= 0
                 ? TrainingGeometry.Current.MultiDirectionZoneCount(cardinalIndex, directionCount)
                 : TrainingGeometry.Current.DistanceZoneCount;
-            // No sequential lockout; with BaseZoneEndCm = 0.0 every zone
-            // (including micro-flick zones) is a calibration target.
-            return distanceZoneIndex < zoneCount && IsCalibrationDistanceZone(distanceZoneIndex);
+            if (distanceZoneIndex < 0 || distanceZoneIndex >= zoneCount ||
+                !IsCalibrationDistanceZone(distanceZoneIndex)) return false;
+            if (directionCount == 4 && TrainingGeometry.Current.UseMidEndPoints)
+                return IsCellAvailableForTrainingStrict(states, angleZoneIndex, distanceZoneIndex);
+            return true;
         }
 
         /// <summary>
@@ -596,9 +598,17 @@ namespace grapher.DesktopSens.Models
             int zoneCount = cardinalIndex >= 0
                 ? TrainingGeometry.Current.CardinalDirectionZoneCount(cardinalIndex)
                 : TrainingGeometry.Current.DistanceZoneCount;
-            // Remove sequential lockout; with BaseZoneEndCm = 0.0 every zone
-            // (including micro-flick zones) is a calibration target.
-            return distanceZoneIndex < zoneCount && IsCalibrationDistanceZone(distanceZoneIndex);
+            if (distanceZoneIndex < 0 || distanceZoneIndex >= zoneCount ||
+                !IsCalibrationDistanceZone(distanceZoneIndex)) return false;
+            if (TrainingGeometry.Current.UseMidEndPoints)
+            {
+                if (distanceZoneIndex == 0) return true;
+                int previousCellIndex = GetCellIndex(angleZoneIndex, distanceZoneIndex - 1);
+                return states != null && states.TryGetValue(previousCellIndex, out var previousState) &&
+                    previousState != null && previousState.Verified && previousState.PrecisionVerified &&
+                    !previousState.NeedsReview;
+            }
+            return true;
         }
 
         /// <summary>
@@ -623,6 +633,8 @@ namespace grapher.DesktopSens.Models
             int zoneCount = cardinalIndex >= 0
                 ? TrainingGeometry.Current.CardinalDirectionZoneCount(cardinalIndex)
                 : TrainingGeometry.Current.DistanceZoneCount;
+            if (TrainingGeometry.Current.UseMidEndPoints)
+                return IsCellAvailableForTrainingStrict(states, angleZoneIndex, distanceZoneIndex);
             // The allowOverride flag is retained for API compatibility.
             return distanceZoneIndex < zoneCount && IsCalibrationDistanceZone(distanceZoneIndex);
         }

@@ -81,6 +81,7 @@ namespace grapher.DesktopSens.Models
         /// "not yet configured — fall back to the legacy default (30 cm)".
         /// </summary>
         public double MaxDistanceCm { get; set; } = 0.0;
+        public bool UseMidEndPoints { get; set; } = false;
 
         // ───────────────────────────────────────────────────────────────
         // Zone-0 sub-marker density.
@@ -133,7 +134,7 @@ namespace grapher.DesktopSens.Models
                 int baseCount = CalculateHorizontalMarkerCount(MarkerStepDegrees, MaxAxisDegrees);
                 if (baseCount <= 0) return 0;
                 int extra = Math.Max(0, EffectiveZone0SubMarkerCount - 1);
-                return baseCount + extra;
+                return (baseCount + extra) * (UseMidEndPoints ? 2 : 1);
             }
         }
 
@@ -169,7 +170,7 @@ namespace grapher.DesktopSens.Models
                 int baseCount = Math.Max(0, (int)Math.Ceiling(effective / MarkerStepDegrees - 1e-9) - 1);
                 if (baseCount <= 0) return 0;
                 int extra = Math.Max(0, EffectiveZone0SubMarkerCount - 1);
-                return baseCount + extra;
+                return (baseCount + extra) * (UseMidEndPoints ? 2 : 1);
             }
         }
 
@@ -307,9 +308,16 @@ namespace grapher.DesktopSens.Models
                 !IsFinitePositive(MarkerStepDegrees))
                 return 0.0;
             int i = Math.Max(0, Math.Min(count - 1, markerIndex));
-            double degrees = MarkerAngularDegrees(i);
-            return Math.Min(MaxAxisDegrees, degrees) /
-                MaxAxisDegrees * maxDistanceCm;
+            double degrees;
+            if (UseMidEndPoints)
+            {
+                int physicalMarker = i / 2;
+                double endDegrees = MarkerAngularDegrees(physicalMarker);
+                double startDegrees = physicalMarker == 0 ? 0.0 : MarkerAngularDegrees(physicalMarker - 1);
+                degrees = (i & 1) == 0 ? (startDegrees + endDegrees) * 0.5 : endDegrees;
+            }
+            else degrees = MarkerAngularDegrees(i);
+            return Math.Min(MaxAxisDegrees, degrees) / MaxAxisDegrees * maxDistanceCm;
         }
 
         /// <summary>
@@ -331,42 +339,25 @@ namespace grapher.DesktopSens.Models
         /// </summary>
         public int DistanceToMarkerIndex(double distanceCm, double maxDistanceCm)
         {
-            // Keep invalid measurements out of the zone resolver. In particular,
-            // +Infinity previously saturated to the final zone while NaN relied
-            // on runtime-specific floating-point-to-int conversion behavior.
-            if (!IsFinitePositive(distanceCm) || !IsFinitePositive(maxDistanceCm))
-                return -1;
+            if (!IsFinitePositive(distanceCm) || !IsFinitePositive(maxDistanceCm)) return -1;
             int count = DistanceZoneCount;
-            // Invalid geometry must not silently turn an invalid measurement into
-            // zone 0. Public geometry properties can be edited independently of
-            // Configure(), so validate the full mapping contract here as well.
-            if (count <= 0 ||
-                !IsFinitePositive(MaxAxisDegrees) ||
-                !IsFinitePositive(MarkerStepDegrees))
-                return -1;
-
-            // Convert the observed distance back to angular degrees.
+            if (count <= 0 || !IsFinitePositive(MaxAxisDegrees) || !IsFinitePositive(MarkerStepDegrees)) return -1;
+            if (UseMidEndPoints)
+            {
+                int nearest = 0;
+                double nearestError = double.PositiveInfinity;
+                for (int marker = 0; marker < count; marker++)
+                {
+                    double error = Math.Abs(MarkerDistanceCm(marker, maxDistanceCm) - distanceCm);
+                    if (error < nearestError) { nearestError = error; nearest = marker; }
+                }
+                return nearest;
+            }
             double angularDeg = distanceCm / maxDistanceCm * MaxAxisDegrees;
             int n = EffectiveZone0SubMarkerCount;
-
-            double raw;
-            if (n <= 1)
-            {
-                // Legacy: i = (angular / step) - 1
-                raw = (angularDeg / MarkerStepDegrees) - 1.0;
-            }
-            else if (angularDeg < MarkerStepDegrees)
-            {
-                // Inside zone 0's sub-marker range [0, step):
-                //   angular = (i+1) * step / n  →  i = angular * n / step - 1
-                raw = (angularDeg * n / MarkerStepDegrees) - 1.0;
-            }
-            else
-            {
-                // At or beyond the original zone-0 marker (angular >= step):
-                //   angular = (i - n + 2) * step  →  i = angular / step + n - 2
-                raw = (angularDeg / MarkerStepDegrees) + (n - 2.0);
-            }
+            double raw = n <= 1 ? (angularDeg / MarkerStepDegrees) - 1.0 :
+                angularDeg < MarkerStepDegrees ? (angularDeg * n / MarkerStepDegrees) - 1.0 :
+                (angularDeg / MarkerStepDegrees) + (n - 2.0);
             int idx = (int)Math.Floor(raw + 0.5);
             return Math.Max(0, Math.Min(count - 1, idx));
         }
@@ -400,7 +391,7 @@ namespace grapher.DesktopSens.Models
             double maxDistanceCm)
         {
             Configure(markerStepDegrees, maxAxisDegrees, maxPitchDegrees, maxDistanceCm,
-                Current.Zone0SubMarkerCount);
+                Current.Zone0SubMarkerCount, Current.UseMidEndPoints);
         }
 
         /// <summary>
@@ -417,13 +408,21 @@ namespace grapher.DesktopSens.Models
             double maxDistanceCm,
             int zone0SubMarkerCount)
         {
+            Configure(markerStepDegrees, maxAxisDegrees, maxPitchDegrees, maxDistanceCm,
+                zone0SubMarkerCount, false);
+        }
+
+        public static void Configure(double markerStepDegrees, double maxAxisDegrees,
+            double maxPitchDegrees, double maxDistanceCm, int zone0SubMarkerCount, bool useMidEndPoints)
+        {
             Current = new TrainingGeometry
             {
                 MarkerStepDegrees = IsFinitePositive(markerStepDegrees) ? markerStepDegrees : 10.0,
                 MaxAxisDegrees = IsFinitePositive(maxAxisDegrees) ? maxAxisDegrees : 180.0,
                 MaxPitchDegrees = IsFinitePositive(maxPitchDegrees) ? maxPitchDegrees : 89.0,
                 MaxDistanceCm = IsFinitePositive(maxDistanceCm) ? maxDistanceCm : 0.0,
-                Zone0SubMarkerCount = zone0SubMarkerCount > 1 ? zone0SubMarkerCount : 1
+                Zone0SubMarkerCount = zone0SubMarkerCount > 1 ? zone0SubMarkerCount : 1,
+                UseMidEndPoints = useMidEndPoints
             };
         }
 

@@ -117,7 +117,7 @@ namespace grapher.DesktopSens.Models
         // CalibrationResidualCache entries written under v8/v9 (which used the
         // raw TargetDistanceCm in zone aggregation) must not be reused — the
         // aggregated targets differ, so any cached factor is invalid.
-        public const int CurrentModelVersion = 13;
+        public const int CurrentModelVersion = 14;
 
         // Shared calibration defaults and physical thresholds.
         public const double NeutralFactor = 1.0;

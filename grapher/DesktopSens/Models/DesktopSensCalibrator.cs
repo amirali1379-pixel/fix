@@ -68,6 +68,8 @@ namespace grapher.DesktopSens.Models
         {
             if (profile == null) throw new ArgumentNullException(nameof(profile));
             if (profile.Trials == null) profile.Trials = new List<DesktopSensTrial>();
+            if (TrainingGeometry.Current.UseMidEndPoints)
+                DesktopSensProfileMigration.MigrateToVersion14(profile);
 
             // The distance-zone count comes from TrainingGeometry — the trainer
             // is the central authority.

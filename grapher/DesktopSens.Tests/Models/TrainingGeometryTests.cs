@@ -26,6 +26,21 @@ namespace DesktopSens.Tests.Models
         }
 
         [Fact]
+        public void MidEndModeDoublesMarkersAndRoundTrips()
+        {
+            var geometry = new TrainingGeometry
+            {
+                MarkerStepDegrees = 10.0, MaxAxisDegrees = 180.0, MaxPitchDegrees = 89.0,
+                MaxDistanceCm = 30.0, UseMidEndPoints = true
+            };
+            Assert.Equal(38, geometry.HorizontalMarkerCount);
+            Assert.Equal(20, geometry.VerticalMarkerCount);
+            Assert.Equal(15.0 / 38.0, geometry.MarkerDistanceCm(0, 30.0) / 30.0, 6);
+            Assert.Equal(1, geometry.DistanceToMarkerIndex(geometry.MarkerDistanceCm(1, 30.0), 30.0));
+            Assert.Equal(2, geometry.DistanceToMarkerIndex(geometry.MarkerDistanceCm(2, 30.0), 30.0));
+        }
+
+        [Fact]
         public void DistanceMappingRoundTripsCanonicalMarker()
         {
             var geometry = new TrainingGeometry
