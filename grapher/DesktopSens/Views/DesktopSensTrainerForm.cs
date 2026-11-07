@@ -1442,9 +1442,13 @@ namespace grapher.DesktopSens.Views
             if (!_sensitivityFinderMode && _isTrainingMode && !trial.IsEvaluationOnly &&
                 !trial.WasRejected && _selectedDistanceZone >= 0)
             {
-                double zoneStartCm = _selectedDistanceZone > 0
-                    ? TrainingGeometry.Current.MarkerDistanceCm(
-                        _selectedDistanceZone - 1, _maxDistanceCm)
+                int gateStartZone = _selectedDistanceZone - 1;
+                if (TrainingGeometry.Current.UseMidEndPoints && _selectedDistanceZone >= 2)
+                    gateStartZone = (_selectedDistanceZone & 1) == 0
+                        ? _selectedDistanceZone - 1
+                        : _selectedDistanceZone - 2;
+                double zoneStartCm = gateStartZone >= 0
+                    ? TrainingGeometry.Current.MarkerDistanceCm(gateStartZone, _maxDistanceCm)
                     : 0.0;
                 trainGateResult = DesktopSensTrialGate.Evaluate(
                     trial, zoneStartCm, _selectedDistanceZone == 0);
@@ -1462,7 +1466,7 @@ namespace grapher.DesktopSens.Views
                     switch (trainGateResult.Reason)
                     {
                         case TrialRejectionReason.DidNotEnterZone:
-                            gateMessage = "فلیک هنوز داخل زون قبلی مانده؛ نقطه‌ی انتهای زون قبلی را دوباره کالیبره کن.";
+                            gateMessage = "فلیک هنوز در زون قبلی مانده؛ End زون قبلی را دوباره کالیبره کن";
                             break;
                         case TrialRejectionReason.OvershootOutOfRange:
                             gateMessage = "فلیک بیش از حد از هدف عبور کرد؛ این trial رد شد.";

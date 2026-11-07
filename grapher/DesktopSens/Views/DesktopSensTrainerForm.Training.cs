@@ -698,7 +698,16 @@ namespace grapher.DesktopSens.Views
                 UpdateTrainingArenaProperties();
                 UpdateTrainingHud();
                 if (!selectedCellAvailable)
+                {
+                    if (TrainingGeometry.Current.UseMidEndPoints)
+                    {
+                        string lockReason = (_selectedDistanceZone & 1) == 1
+                            ? "ابتدا Mid همین زون را سبز کن؛ End هنوز قفل است."
+                            : "ابتدا End زون قبلی را سبز کن؛ این Mid هنوز قفل است.";
+                        DesktopSensToast.Show(this, lockReason);
+                    }
                     return;
+                }
 
                 // Place the target on the selected cell. This sets state
                 // to Cooldown, so the existing OnMouseDown state machine

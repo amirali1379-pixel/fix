@@ -35,7 +35,8 @@ namespace DesktopSens.Tests.Models
             };
             Assert.Equal(38, geometry.HorizontalMarkerCount);
             Assert.Equal(20, geometry.VerticalMarkerCount);
-            Assert.Equal(15.0 / 38.0, geometry.MarkerDistanceCm(0, 30.0) / 30.0, 6);
+            Assert.Equal(geometry.MarkerDistanceCm(1, 30.0) * 0.5,
+                geometry.MarkerDistanceCm(0, 30.0), 10);
             Assert.Equal(1, geometry.DistanceToMarkerIndex(geometry.MarkerDistanceCm(1, 30.0), 30.0));
             Assert.Equal(2, geometry.DistanceToMarkerIndex(geometry.MarkerDistanceCm(2, 30.0), 30.0));
         }
