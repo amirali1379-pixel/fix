@@ -1394,7 +1394,6 @@ namespace grapher.DesktopSens.Views
                 double factorAtSample = 1.0;
                 if (activeProfile != null && deltaTicks > 0 && sampleCmPerCount > 0.0)
                 {
-                    double dtSec = deltaTicks / (double)Stopwatch.Frequency;
                     // Use the same 2-D instantaneous speed metric and
                     // timestamp cleaning as sample-fit and freeze ownership.
                     if (SampleLutSampleProcessor.TryProcess(

@@ -929,6 +929,8 @@ namespace grapher.DesktopSens.Models
 
             var greenSpeedSamplesByCell =
                 new Dictionary<int, List<(double speed, double displacementWeight)>>();
+            var rawSpeedDiagnosticsByCell = new Dictionary<int, List<double>>();
+            var greenTrialCountByCell = new Dictionary<int, int>();
             foreach (var trial in eligible)
             {
                 int cellIndex = DesktopSensProfile.GetCellIndex(angleZone, trial.DistanceZoneIndex);
@@ -937,8 +939,9 @@ namespace grapher.DesktopSens.Models
                     state == null || !state.Verified || !state.PrecisionVerified)
                     continue;
 
+                var rawSpeedDiagnostics = new List<double>();
                 List<(double speed, double displacementWeight)> cellSamples =
-                    GetProjectedSpeedSamplesForFreeze(trial);
+                    GetProjectedSpeedSamplesForFreeze(trial, rawSpeedDiagnostics);
                 if (cellSamples.Count == 0 &&
                     IsFinite(trial.FlickDistanceCm) && trial.FlickDistanceCm > 0.0 &&
                     IsFinite(trial.DurationMs) && trial.DurationMs > 0.0)
@@ -955,29 +958,58 @@ namespace grapher.DesktopSens.Models
                     greenSpeedSamplesByCell[cellIndex] = accumulated;
                 }
                 accumulated.AddRange(cellSamples);
+                if (!rawSpeedDiagnosticsByCell.TryGetValue(cellIndex, out var rawAccumulated))
+                {
+                    rawAccumulated = new List<double>();
+                    rawSpeedDiagnosticsByCell[cellIndex] = rawAccumulated;
+                }
+                rawAccumulated.AddRange(rawSpeedDiagnostics);
+                if (!greenTrialCountByCell.ContainsKey(cellIndex))
+                    greenTrialCountByCell[cellIndex] = 0;
+                greenTrialCountByCell[cellIndex]++;
             }
 
             int newlyFrozenNodeCount = 0;
             foreach (var cell in greenSpeedSamplesByCell)
             {
-                // Weighted P90 of instantaneous target-axis speeds. Weights
-                // are |projected displacement| in cm, so short/noisy samples
-                // contribute less than samples that account for meaningful
-                // motion. This matches SampleLutFitter.ExtractProjectedSamples.
+                // Weighted P90 uses displacement magnitude as sample weight;
+                // the speed itself is the shared cleaned 2-D RawAccel speed.
                 double p90Speed = WeightedPercentile(cell.Value, 0.90);
                 if (!IsFinite(p90Speed) || p90Speed <= 0.0) continue;
 
-                // Freeze through (inclusive) the first fixed-grid node whose
-                // speed is >= P90. This is a ceil boundary: interpolation at
-                // the cell's upper observed speed cannot depend on a free node.
-                int freezeThroughNode = fit.NodeSpeedCmPerSec.Length - 1;
-                for (int node = 0; node < fit.NodeSpeedCmPerSec.Length; node++)
+                double totalDisplacementWeight = 0.0;
+                double weightedSpeedSum = 0.0;
+                foreach (var sample in cell.Value)
                 {
-                    if (fit.NodeSpeedCmPerSec[node] >= p90Speed)
+                    totalDisplacementWeight += sample.displacementWeight;
+                    weightedSpeedSum += sample.speed * sample.displacementWeight;
+                }
+                double weightedMeanSpeed = totalDisplacementWeight > 0.0
+                    ? weightedSpeedSum / totalDisplacementWeight : double.NaN;
+
+                int freezeThroughNode = FindFreezeThroughNode(
+                    fit.NodeSpeedCmPerSec, p90Speed);
+                bool usedMeanSpeedGuard = false;
+                if (freezeThroughNode == fit.NodeSpeedCmPerSec.Length - 1 &&
+                    IsFinite(weightedMeanSpeed) && weightedMeanSpeed > 0.0 &&
+                    p90Speed / weightedMeanSpeed >
+                        DesktopSensConstants.SampleLutFreezeP90MeanSpeedRatioLimit)
+                {
+                    double guardedP90 = weightedMeanSpeed *
+                        DesktopSensConstants.SampleLutFreezeFallbackMeanSpeedMultiplier;
+                    if (guardedP90 < p90Speed)
                     {
-                        freezeThroughNode = node;
-                        break;
+                        p90Speed = guardedP90;
+                        freezeThroughNode = FindFreezeThroughNode(
+                            fit.NodeSpeedCmPerSec, p90Speed);
+                        usedMeanSpeedGuard = true;
                     }
+                    DesktopSensLog.Warn("SampleLut freeze P90 anomaly guarded: angleZone=" +
+                        angleZone + " cell=" + cell.Key +
+                        " rawP90ToMean=" + (WeightedPercentile(cell.Value, 0.90) /
+                            weightedMeanSpeed).ToString("0.00") +
+                        " meanSpeedCmPerSec=" + weightedMeanSpeed.ToString("0.00") +
+                        " guardedP90CmPerSec=" + p90Speed.ToString("0.00"));
                 }
 
                 for (int node = 0; node <= freezeThroughNode; node++)
@@ -988,6 +1020,26 @@ namespace grapher.DesktopSens.Models
                         newlyFrozenNodeCount++;
                     }
                 }
+
+                List<double> before = rawSpeedDiagnosticsByCell.TryGetValue(cell.Key, out var rawStats)
+                    ? rawStats : new List<double>();
+                List<double> after = new List<double>();
+                foreach (var sample in cell.Value) after.Add(sample.speed);
+                DesktopSensLog.Info("SampleLut freeze cell: angleZone=" + angleZone +
+                    " cell=" + cell.Key +
+                    " trials=" + (greenTrialCountByCell.TryGetValue(cell.Key, out var trialCount) ? trialCount : 0) +
+                    " samplesBefore=" + before.Count + " samplesAfter=" + after.Count +
+                    " meanSpeedCmPerSec=" + weightedMeanSpeed.ToString("0.00") +
+                    " beforeP50/P90/max=" + PercentileUnweighted(before, 0.50).ToString("0.00") + "/" +
+                        PercentileUnweighted(before, 0.90).ToString("0.00") + "/" +
+                        MaxValue(before).ToString("0.00") +
+                    " afterP50/P90/max=" + PercentileUnweighted(after, 0.50).ToString("0.00") + "/" +
+                        PercentileUnweighted(after, 0.90).ToString("0.00") + "/" +
+                        MaxValue(after).ToString("0.00") +
+                    " weightedP90=" + p90Speed.ToString("0.00") +
+                    " freezeThroughNode=" + freezeThroughNode +
+                    " nodeSpeedCmPerSec=" + fit.NodeSpeedCmPerSec[freezeThroughNode].ToString("0.00") +
+                    " meanSpeedGuard=" + usedMeanSpeedGuard);
             }
             profile.FrozenSampleLutNodeFactorsByAngleZone[angleZone] = frozen;
             if (newlyFrozenNodeCount > 0)
@@ -1127,6 +1179,37 @@ namespace grapher.DesktopSens.Models
                     result.Add((speed, weight));
             }
             return result;
+        }
+
+        private static int FindFreezeThroughNode(double[] nodeSpeeds, double p90Speed)
+        {
+            if (nodeSpeeds == null || nodeSpeeds.Length == 0) return 0;
+            for (int node = 0; node < nodeSpeeds.Length; node++)
+                if (nodeSpeeds[node] >= p90Speed) return node;
+            return nodeSpeeds.Length - 1;
+        }
+
+        private static double PercentileUnweighted(IList<double> values, double percentile)
+        {
+            if (values == null || values.Count == 0) return double.NaN;
+            var sorted = new List<double>();
+            foreach (double value in values)
+                if (IsFinite(value) && value > 0.0) sorted.Add(value);
+            if (sorted.Count == 0) return double.NaN;
+            sorted.Sort();
+            double p = Math.Max(0.0, Math.Min(1.0, percentile));
+            int index = (int)Math.Ceiling(p * sorted.Count) - 1;
+            index = Math.Max(0, Math.Min(sorted.Count - 1, index));
+            return sorted[index];
+        }
+
+        private static double MaxValue(IList<double> values)
+        {
+            if (values == null || values.Count == 0) return double.NaN;
+            double max = double.NaN;
+            foreach (double value in values)
+                if (IsFinite(value) && (double.IsNaN(max) || value > max)) max = value;
+            return max;
         }
 
         private static double WeightedPercentile(
