@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Windows.Forms;
+using Newtonsoft.Json;
 using OpenTK;
 using grapher.DesktopSens.Models;
 using grapher.Models.Mouse;
@@ -38,8 +39,8 @@ namespace grapher.DesktopSens.Views
         // that case.
         private Func<object> _activeProfileProvider;
         private int _selectedAxisIndex = -1;     // 0=Right, 1=Down, 2=Left, 3=Up
-        private int _selectedDistanceZone = -1;  // 0..N-1 on the selected axis,
-                                                 // where N = TrainingGeometry.Current.DistanceZoneCount
+        private int _selectedDistanceZone = -1;
+        private DesktopSensTrainingUndoSnapshot _lastTrialUndoSnapshot;
         // The EXACT distance in cm that the user clicked. Used for target
         // placement so the target appears exactly where the user clicked,
         // not at the nearest zone center (which can be up to ~1.5 cm away
@@ -698,7 +699,16 @@ namespace grapher.DesktopSens.Views
                 UpdateTrainingArenaProperties();
                 UpdateTrainingHud();
                 if (!selectedCellAvailable)
+                {
+                    if (TrainingGeometry.Current.UseMidEndPoints)
+                    {
+                        string lockReason = (_selectedDistanceZone & 1) == 1
+                            ? "ابتدا Mid همین زون را سبز کن؛ End هنوز قفل است."
+                            : "ابتدا End زون قبلی را سبز کن؛ این Mid هنوز قفل است.";
+                        DesktopSensToast.Show(this, lockReason);
+                    }
                     return;
+                }
 
                 // Place the target on the selected cell. This sets state
                 // to Cooldown, so the existing OnMouseDown state machine
@@ -744,6 +754,72 @@ namespace grapher.DesktopSens.Views
         /// same manual-target-placement flow as the cardinal trainer
         /// and doesn't need these keys.
         /// </summary>
+        private void UndoLastTrainingTrial()
+        {
+            if (_profile == null || _lastTrialUndoSnapshot == null)
+            {
+                DesktopSensToast.Show(this, "برای Undo، trial قبلی در این نشست موجود نیست.");
+                return;
+            }
+            try
+            {
+                _lastTrialUndoSnapshot.Restore(_profile, _angleZoneCounts, _distanceZoneCounts);
+                _lastTrialUndoSnapshot = null;
+                CalibrationResidualCache.Clear(_profile);
+                OnCellVerifiedPersistProfile();
+                UpdateTrainingArenaProperties();
+                UpdateTrainingHud();
+                DesktopSensLog.Warn("Training trial undo restored bounded pre-trial calibration state.");
+            }
+            catch (Exception ex)
+            {
+                DesktopSensLog.Error("Could not undo last training trial", ex);
+                DesktopSensToast.Show(this, "Undo انجام نشد؛ snapshot قابل بازیابی نبود.");
+            }
+        }
+
+        private void ResetSelectedTrainingCell()
+        {
+            if (_profile == null || _selectedAxisIndex < 0 || _selectedDistanceZone < 0)
+            {
+                DesktopSensToast.Show(this, "ابتدا یک نقطه‌ی کالیبراسیون را انتخاب کن.");
+                return;
+            }
+            int directionCount = DesktopSensTrainingState.ResolveDirectionCount(_profile);
+            if (directionCount != 4 || !TrainingGeometry.Current.UseMidEndPoints)
+            {
+                DesktopSensToast.Show(this, "Reset نقطه‌ای فقط در حالت چهارجهته‌ی Mid/End فعال است.");
+                return;
+            }
+            int[] angleZones = DesktopSensTrainingState.AngleZoneIndicesForCount(directionCount);
+            if (_selectedAxisIndex >= angleZones.Length) return;
+            int angleZone = angleZones[_selectedAxisIndex];
+            int affected = 0;
+            if (_profile.CellTrainingStates != null)
+            {
+                for (int d = _selectedDistanceZone; d < TrainingGeometry.Current.DistanceZoneCount; d++)
+                {
+                    int index = DesktopSensProfile.GetCellIndex(angleZone, d);
+                    if (_profile.CellTrainingStates.TryGetValue(index, out var state) &&
+                        state != null && (state.Verified || state.PrecisionVerified)) affected++;
+                }
+            }
+            DialogResult confirm = MessageBox.Show(this,
+                "این نقطه reset می‌شود؛ trialهای خودش حذف و نقاط بالاتر NeedsReview می‌شوند.\n" +
+                "تعداد نقاط سبز متأثر: " + affected + "\nادامه می‌دهی؟",
+                "Reset calibration point", MessageBoxButtons.YesNo, MessageBoxIcon.Warning,
+                MessageBoxDefaultButton.Button2);
+            if (confirm != DialogResult.Yes) return;
+
+            DesktopSensTrainingState.ResetCell(_profile, angleZone, _selectedDistanceZone);
+            try { DesktopSensCalibrator.Calibrate(_profile); }
+            catch (Exception ex) { DesktopSensLog.Error("Calibration recompute after point reset failed", ex); }
+            _lastTrialUndoSnapshot = null;
+            OnCellVerifiedPersistProfile();
+            UpdateTrainingArenaProperties();
+            UpdateTrainingHud();
+        }
+
         private bool HandleTrainingModeKey(KeyEventArgs e)
         {
             // Sens Finder mode = its own environment. Cardinal-trainer
@@ -776,6 +852,20 @@ namespace grapher.DesktopSens.Views
             if (e.KeyCode == Keys.M && !e.Shift && !e.Control && !e.Alt)
             {
                 TryMergeAndApply();
+                e.Handled = true;
+                e.SuppressKeyPress = true;
+                return true;
+            }
+            if (e.KeyCode == Keys.Z && e.Control && !e.Alt && !e.Shift)
+            {
+                UndoLastTrainingTrial();
+                e.Handled = true;
+                e.SuppressKeyPress = true;
+                return true;
+            }
+            if (e.KeyCode == Keys.R && e.Shift && !e.Control && !e.Alt)
+            {
+                ResetSelectedTrainingCell();
                 e.Handled = true;
                 e.SuppressKeyPress = true;
                 return true;
@@ -1921,19 +2011,61 @@ namespace grapher.DesktopSens.Views
                     signedError = observed * Math.Exp(-sessionBias) - effectiveTargetCm;
             }
 
+            int cellIndex = DesktopSensProfile.GetCellIndex(angleZone, _selectedDistanceZone);
+            if (_profile.CellTrainingStates.TryGetValue(cellIndex, out var existingCellState) &&
+                existingCellState != null && existingCellState.IsDiverging)
+            {
+                trial.IsCalibrationExcluded = true;
+                trial.WasRejected = true;
+                trial.RejectionReason = TrialRejectionReason.CellDiverging;
+                DesktopSensTrainingState.RecordRejectedAttempt(
+                    _profile.CellTrainingStates, angleZone, _selectedDistanceZone,
+                    trial.SignedErrorCm, DateTime.UtcNow, _profile.CurrentSessionId);
+                DesktopSensLog.Warn("Training trial blocked: selected cell is diverging; cell=" + cellIndex);
+                DesktopSensToast.Show(this, "این نقطه واگرا شده؛ برای ادامه Undo یا Reset همین نقطه را انجام بده.");
+                OnCellVerifiedPersistProfile();
+                UpdateTrainingArenaProperties();
+                UpdateTrainingHud();
+                return;
+            }
+
+            if (TrainingGeometry.Current.UseMidEndPoints)
+            {
+                bool alreadyGreen = _profile.CellTrainingStates.TryGetValue(cellIndex, out var currentCellBeforeFit) &&
+                    currentCellBeforeFit != null && currentCellBeforeFit.Verified &&
+                    currentCellBeforeFit.PrecisionVerified;
+                int freeNodeCount;
+                if (!alreadyGreen && !DesktopSensProfileMerger.HasFreeSampleLutNodeForCell(
+                    _profile, angleZone, _selectedDistanceZone, out freeNodeCount))
+                {
+                    trial.IsCalibrationExcluded = true;
+                    trial.WasRejected = true;
+                    trial.RejectionReason = TrialRejectionReason.NoFreeLutNodes;
+                    DesktopSensLog.Warn("Training trial blocked: no free LUT node in current speed range; cell=" +
+                        cellIndex + " freeNodes=" + freeNodeCount);
+                    DesktopSensToast.Show(this,
+                        "سرعت این نقطه با محدوده‌ی قفل‌شده‌ی نقطه‌ی قبل هم‌پوشانی دارد؛ نقطه‌ی قبلی را دوباره کالیبره کن یا فلیک را با سرعت متفاوت بزن");
+                    OnCellVerifiedPersistProfile();
+                    UpdateTrainingArenaProperties();
+                    UpdateTrainingHud();
+                    return;
+                }
+            }
+
             // Capture the previous verified-flag so we can detect the
             // yellow→green transition and trigger an explicit save. The
             // user explained: "when a point becomes green, it must be
             // saved" — so the chain is persisted immediately, not just on
             // trainer close. Without an immediate save, a crash or trainer
             // close mid-axis would lose the verified cells.
-            int cellIndex = DesktopSensProfile.GetCellIndex(angleZone, _selectedDistanceZone);
             bool wasVerifiedBefore = false;
+            bool wasPrecisionVerifiedBefore = false;
             bool wasFirstRoundBefore = false;
             string verifiedSessionBefore = null;
             if (_profile.CellTrainingStates.TryGetValue(cellIndex, out var prevState) && prevState != null)
             {
                 wasVerifiedBefore = prevState.Verified;
+                wasPrecisionVerifiedBefore = prevState.PrecisionVerified;
                 wasFirstRoundBefore = prevState.FirstRoundComplete;
                 verifiedSessionBefore = prevState.VerifiedSessionId;
             }
@@ -1951,7 +2083,24 @@ namespace grapher.DesktopSens.Views
                 angularErrorDegrees: angularErr,
                 targetDistanceCm: effectiveTargetCm,
                 sessionBiasApplied: sessionBiasApplied,
-                sessionBiasLogGain: sessionBiasApplied ? sessionBias : 0.0);
+                sessionBiasLogGain: sessionBiasApplied ? sessionBias : 0.0,
+                rawFlickErrorCm: trial.SignedErrorCm);
+
+            if (_profile.CellTrainingStates.TryGetValue(cellIndex, out var newlyDivergingState) &&
+                newlyDivergingState != null && newlyDivergingState.IsDiverging)
+            {
+                trial.IsCalibrationExcluded = true;
+                trial.WasRejected = true;
+                trial.RejectionReason = TrialRejectionReason.CellDiverging;
+                DesktopSensLog.Warn("Training cell divergence detected; freezing further updates: cell=" +
+                    cellIndex + " robustErrorCm=" + newlyDivergingState.RobustSignedErrorCm.ToString("0.000") +
+                    " streak=" + newlyDivergingState.DivergenceWorseningStreak);
+                DesktopSensToast.Show(this, "خطای این نقطه در چند trial پیاپی بدتر شد؛ کالیبراسیون متوقف شد. Undo/Reset نقطه را پیشنهاد می‌کنم.");
+                OnCellVerifiedPersistProfile();
+                UpdateTrainingArenaProperties();
+                UpdateTrainingHud();
+                return;
+            }
 
             // NEW (Model v6): capture the cell's previous acceleration factor so
             // we can detect a >1% change after Calibrate() runs. Previously a
@@ -1966,25 +2115,39 @@ namespace grapher.DesktopSens.Views
             // Re-run the per-cell calibrator so factors stay in sync with the
             // trial set. Live mouse input remains raw; Calibrate() rebuilds all
             // chain residuals from raw samples in deterministic zone order.
+            var calibrateMergeApplyTimer = System.Diagnostics.Stopwatch.StartNew();
             try
             {
                 DesktopSensCalibrator.Calibrate(_profile);
-                double trainFactor = cellIndex >= 0 &&
-                    _profile.CellSensitivityFactor != null &&
-                    cellIndex < _profile.CellSensitivityFactor.Length
+                double sensitivityFactorForLog = cellIndex >= 0 &&
+                    _profile.CellSensitivityFactor != null && cellIndex < _profile.CellSensitivityFactor.Length
                         ? _profile.CellSensitivityFactor[cellIndex] : 1.0;
-                double trainConfidence = cellIndex >= 0 &&
-                    _profile.CellSensitivityConfidence != null &&
-                    cellIndex < _profile.CellSensitivityConfidence.Length
+                double sensitivityConfidenceForLog = cellIndex >= 0 &&
+                    _profile.CellSensitivityConfidence != null && cellIndex < _profile.CellSensitivityConfidence.Length
                         ? _profile.CellSensitivityConfidence[cellIndex] : 0.0;
+                double accelerationFactorForLog = cellIndex >= 0 &&
+                    _profile.CellAccelerationFactor != null && cellIndex < _profile.CellAccelerationFactor.Length
+                        ? _profile.CellAccelerationFactor[cellIndex] : 1.0;
+                double accelerationConfidenceForLog = cellIndex >= 0 &&
+                    _profile.CellAccelerationConfidence != null && cellIndex < _profile.CellAccelerationConfidence.Length
+                        ? _profile.CellAccelerationConfidence[cellIndex] : 0.0;
+                bool isBaseDimensionForLog = TrainingGeometry.Current.ZoneCenterCm(_selectedDistanceZone)
+                    <= DesktopSensConstants.BaseZoneEndCm;
+                double trainFactor = isBaseDimensionForLog ? sensitivityFactorForLog : accelerationFactorForLog;
+                double trainConfidence = isBaseDimensionForLog ? sensitivityConfidenceForLog : accelerationConfidenceForLog;
                 TrainingCellState diagnosticState = null;
                 if (_profile.CellTrainingStates != null)
                     _profile.CellTrainingStates.TryGetValue(cellIndex, out diagnosticState);
                 DesktopSensLog.Warn(
                     "Train calibration recomputed: cell=" + cellIndex +
                     " trials=" + _profile.Trials.Count +
+                    " factorKind=" + (isBaseDimensionForLog ? "sensitivity" : "acceleration") +
                     " factor=" + trainFactor.ToString("0.000") +
                     " confidence=" + trainConfidence.ToString("0.000") +
+                    " sensFactor=" + sensitivityFactorForLog.ToString("0.000") +
+                    " sensConfidence=" + sensitivityConfidenceForLog.ToString("0.000") +
+                    " accelFactor=" + accelerationFactorForLog.ToString("0.000") +
+                    " accelConfidence=" + accelerationConfidenceForLog.ToString("0.000") +
                     " rawError=" + signedError.ToString("+0.000;-0.000;0.000") +
                     " robustRawError=" + (diagnosticState != null
                         ? diagnosticState.RobustSignedErrorCm.ToString("+0.000;-0.000;0.000") : "n/a") +
@@ -2001,18 +2164,35 @@ namespace grapher.DesktopSens.Views
             // cell. If the cell just turned green, persist the profile
             // immediately so the chain survives a trainer crash or close.
             bool isVerifiedNow = false;
+            bool isPrecisionVerifiedNow = false;
             bool isFirstRoundNow = false;
             string verifiedSessionNow = null;
             if (_profile.CellTrainingStates.TryGetValue(cellIndex, out var postState) && postState != null)
             {
                 isVerifiedNow = postState.Verified;
+                isPrecisionVerifiedNow = postState.PrecisionVerified;
                 isFirstRoundNow = postState.FirstRoundComplete;
                 verifiedSessionNow = postState.VerifiedSessionId;
             }
             bool trainingStateChanged =
                 wasVerifiedBefore != isVerifiedNow ||
+                wasPrecisionVerifiedBefore != isPrecisionVerifiedNow ||
                 wasFirstRoundBefore != isFirstRoundNow ||
                 !string.Equals(verifiedSessionBefore, verifiedSessionNow, StringComparison.Ordinal);
+
+            // A previously green cell that loses verification no longer owns
+            // its frozen LUT segment. Release this cell's nodes and every
+            // higher-speed dependent node before the next sample-fit build.
+            bool wasGreenBefore = wasVerifiedBefore && wasPrecisionVerifiedBefore;
+            bool isGreenNow = isVerifiedNow && isPrecisionVerifiedNow;
+            if (wasGreenBefore && !isGreenNow)
+            {
+                DesktopSensProfileMerger.UnfreezeSampleLutFromCell(
+                    _profile, angleZone, _selectedDistanceZone);
+                CalibrationResidualCache.Clear(_profile);
+                DesktopSensLog.Info("SampleLut unfreeze on green-to-non-green transition: angleZone=" +
+                    angleZone + " distanceZone=" + _selectedDistanceZone);
+            }
             // Persist every accepted training sample, not only color changes:
             // a crash must not discard the first-round sample history or the
             // recalculated per-cell factors needed by the next chain step.
@@ -2120,12 +2300,71 @@ namespace grapher.DesktopSens.Views
                     // The merge result is logged to DesktopSensLog so
                     // the user can verify via "Show Diag Log".
                     TryMergeAndApply(false);
+                    LogSampleFitApplyDiagnostics();
                 }
             }
             catch (Exception ex)
             {
                 DesktopSensLog.Warn("Auto-merge after trial failed (non-fatal)", ex);
             }
+            calibrateMergeApplyTimer.Stop();
+            DesktopSensLog.Info("Train Calibrate+Merge+Apply elapsedMs=" +
+                calibrateMergeApplyTimer.Elapsed.TotalMilliseconds.ToString("0.0") +
+                " trialCount=" + _profile.Trials.Count);
+        }
+
+        private void LogSampleFitApplyDiagnostics()
+        {
+            if (_profile == null) return;
+            if (_profile.LastBuiltLutPointsByAngleZone != null)
+            {
+                foreach (var entry in _profile.LastBuiltLutPointsByAngleZone)
+                {
+                    if (entry.Value == null) continue;
+                    var x = new List<string>();
+                    var y = new List<string>();
+                    foreach (LutPoint point in entry.Value)
+                    {
+                        x.Add(point.InputSpeedCmPerSec.ToString("0.00"));
+                        y.Add(point.Factor.ToString("0.000"));
+                    }
+                    DesktopSensLog.Info("SampleLut Apply axisZone=" + entry.Key +
+                        " nodeXcmPerSec=[" + string.Join(",", x) + "] nodeY=[" +
+                        string.Join(",", y) + "]");
+                }
+            }
+            object activeProfile = null;
+            try { activeProfile = _activeProfileProvider != null ? _activeProfileProvider() : null; }
+            catch (Exception ex) { DesktopSensLog.Warn("Could not read active RawAccel profile for smoothing diagnostics", ex); }
+            DesktopSensLog.Info("RawAccel smoothing on Apply: input_speed_smooth_halflife=" +
+                ReadProfileDiagnosticValue(activeProfile, "input_speed_smooth_halflife") +
+                " scale_smooth_halflife=" + ReadProfileDiagnosticValue(activeProfile, "scale_smooth_halflife") +
+                " output_speed_smooth_halflife=" + ReadProfileDiagnosticValue(activeProfile, "output_speed_smooth_halflife"));
+        }
+
+        private static string ReadProfileDiagnosticValue(object profile, string name)
+        {
+            if (profile == null) return "n/a";
+            try
+            {
+                var type = profile.GetType();
+                var field = type.GetField(name, System.Reflection.BindingFlags.Instance |
+                    System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic);
+                if (field != null)
+                {
+                    object value = field.GetValue(profile);
+                    return value != null ? Convert.ToString(value, System.Globalization.CultureInfo.InvariantCulture) : "null";
+                }
+                var property = type.GetProperty(name, System.Reflection.BindingFlags.Instance |
+                    System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic);
+                if (property != null)
+                {
+                    object value = property.GetValue(profile, null);
+                    return value != null ? Convert.ToString(value, System.Globalization.CultureInfo.InvariantCulture) : "null";
+                }
+            }
+            catch { }
+            return "n/a";
         }
 
         /// <summary>
@@ -2215,6 +2454,15 @@ namespace grapher.DesktopSens.Views
                 _profile.CellTrainingStates.Clear();
             else
                 _profile.CellTrainingStates = new Dictionary<int, TrainingCellState>();
+
+            // Frozen sample-fit LUT node ownership is training state too.
+            // A full reset must clear it alongside cell verification state.
+            if (_profile.FrozenSampleLutNodeFactorsByAngleZone != null)
+                _profile.FrozenSampleLutNodeFactorsByAngleZone.Clear();
+            if (_profile.LastBuiltLutPointsByAngleZone != null)
+                _profile.LastBuiltLutPointsByAngleZone.Clear();
+            if (_profile.LastBuiltLutBaseFactorByAngleZone != null)
+                _profile.LastBuiltLutBaseFactorByAngleZone.Clear();
 
             // 2. Clear the trial list. The calibrator derives everything
             // from this list, so if we left the trials in place the

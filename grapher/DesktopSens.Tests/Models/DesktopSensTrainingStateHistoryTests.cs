@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using Newtonsoft.Json;
 using grapher.DesktopSens.Models;
 using Xunit;
 
@@ -95,5 +96,55 @@ namespace DesktopSens.Tests.Models
 
             Assert.Empty(states);
         }
+        [Fact]
+        public void TrainingUndoSnapshot_RestoresExactProfileStateWithoutSerializingTrialHistory()
+        {
+            var profile = new DesktopSensProfile();
+            profile.CellTrainingStates = new Dictionary<int, TrainingCellState>();
+            DesktopSensTrainingState.RecordAttempt(
+                profile.CellTrainingStates, 0, 1, 0.25, DateTime.UtcNow,
+                sessionId: "undo-test", targetDistanceCm: 20.0);
+            profile.CellSensitivityFactor[1] = 1.125;
+            profile.CellAccelerationFactor[1] = 0.875;
+            profile.CellCurveParameters[DesktopSensConstants.MaxCurveParameters] = 0.125;
+            profile.FrozenSampleLutNodeFactorsByAngleZone[0] =
+                new double[] { 0.91, 0.92, 0.0, 0.0 };
+            profile.LastBuiltLutPointsByAngleZone[0] = new List<LutPoint>();
+            profile.LastBuiltLutBaseFactorByAngleZone[0] = 1.03;
+            profile.CellsStable = 3;
+            profile.OverallCoverage = 0.375;
+            profile.ModifiedTimestamp = new DateTime(2026, 11, 7, 10, 0, 0, DateTimeKind.Utc);
+            profile.Trials.Add(new DesktopSensTrial { TargetDistanceCm = 20.0 });
+
+            int[] angleCounts = { 2, 3, 4, 5 };
+            int[] distanceCounts = { 6, 7, 8 };
+            string before = JsonConvert.SerializeObject(profile);
+            DesktopSensTrainingUndoSnapshot snapshot =
+                DesktopSensTrainingUndoSnapshot.Capture(profile, angleCounts, distanceCounts);
+
+            profile.Trials.Add(new DesktopSensTrial { TargetDistanceCm = 30.0 });
+            DesktopSensTrainingState.RecordAttempt(
+                profile.CellTrainingStates, 0, 1, -0.75, DateTime.UtcNow,
+                sessionId: "undo-test", targetDistanceCm: 30.0);
+            profile.CellSensitivityFactor[1] = 9.0;
+            profile.CellAccelerationFactor[1] = 8.0;
+            profile.CellCurveParameters[DesktopSensConstants.MaxCurveParameters] = 7.0;
+            profile.FrozenSampleLutNodeFactorsByAngleZone[0][0] = 7.0;
+            profile.LastBuiltLutPointsByAngleZone.Clear();
+            profile.LastBuiltLutBaseFactorByAngleZone[0] = 7.0;
+            profile.CellsStable = 99;
+            profile.OverallCoverage = 1.0;
+            profile.ModifiedTimestamp = DateTime.UtcNow;
+            angleCounts[0] = 99;
+            distanceCounts[0] = 99;
+
+            snapshot.Restore(profile, angleCounts, distanceCounts);
+
+            Assert.Equal(before, JsonConvert.SerializeObject(profile));
+            Assert.Equal(new[] { 2, 3, 4, 5 }, angleCounts);
+            Assert.Equal(new[] { 6, 7, 8 }, distanceCounts);
+            Assert.Single(profile.Trials);
+        }
+
     }
 }

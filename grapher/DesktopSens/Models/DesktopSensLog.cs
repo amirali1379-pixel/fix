@@ -26,6 +26,11 @@ namespace grapher.DesktopSens.Models
                 " path=" + asm.Location, null);
         }
 
+        public static void Info(string message, Exception exception = null)
+        {
+            Write("INFO", message, exception);
+        }
+
         public static void Warn(string message, Exception exception = null)
         {
             Write("WARN", message, exception);

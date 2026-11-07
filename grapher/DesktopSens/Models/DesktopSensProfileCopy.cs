@@ -31,6 +31,19 @@ namespace grapher.DesktopSens.Models
                     continue;
                 property.SetValue(target, property.GetValue(source, null), null);
             }
+
+            // Frozen node arrays are mutable calibration state. Do not let
+            // profile clones share the same array references.
+            if (source is DesktopSensProfile sourceProfile &&
+                target is DesktopSensProfile targetProfile &&
+                sourceProfile.FrozenSampleLutNodeFactorsByAngleZone != null)
+            {
+                targetProfile.FrozenSampleLutNodeFactorsByAngleZone =
+                    new System.Collections.Generic.Dictionary<int, double[]>();
+                foreach (var pair in sourceProfile.FrozenSampleLutNodeFactorsByAngleZone)
+                    targetProfile.FrozenSampleLutNodeFactorsByAngleZone[pair.Key] =
+                        pair.Value != null ? (double[])pair.Value.Clone() : null;
+            }
         }
     }
 }

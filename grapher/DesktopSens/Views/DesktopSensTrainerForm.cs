@@ -211,7 +211,9 @@ namespace grapher.DesktopSens.Views
                 markerStepDegrees,
                 TrainingMaxAxisDegrees,
                 MaxPitchDegrees,
-                _maxDistanceCm);
+                _maxDistanceCm,
+                DesktopSensConstants.DefaultZone0SubMarkerCount,
+                _profile.CalibrationDirectionCount == 4 && _profile.UseSampleFitLut);
 
             // The _distanceZoneCounts field was sized at field-initializer
             // time (before the constructor body ran) using the legacy
@@ -1376,6 +1378,29 @@ namespace grapher.DesktopSens.Views
                 HasAppliedLutFactor = hasAppliedLutFactor
             };
 
+            // Snapshot the active speed LUT at each raw input sample so
+            // residual reconstruction can replay the actual per-sample
+            // driver multiplier (rather than a single median-speed factor).
+            trial.AppliedLutFactorsByRawSample = new List<double>(trial.RawSamples.Count);
+            trial.AppliedLutFactorsByRawSample.Add(1.0);
+            double targetRadForSampleLut = targetAngle * Math.PI / 180.0;
+            string sampleLutAxis = Math.Abs(Math.Cos(targetRadForSampleLut)) >=
+                Math.Abs(Math.Sin(targetRadForSampleLut)) ? "X" : "Y";
+            foreach (SampleLutCachedSample processedSample in
+                SampleLutSampleProcessor.GetCachedSamples(trial))
+            {
+                double factorAtSample = 1.0;
+                if (activeProfile != null && processedSample.IsUsable)
+                {
+                    double queried = RawAccelSettingsBridge.LookupActiveLutFactorFromProfile(
+                        activeProfile, processedSample.SpeedCmPerSec, sampleLutAxis);
+                    if (IsFiniteValue(queried) && queried > 0.0)
+                        factorAtSample = queried;
+                }
+                for (int i = 0; i < processedSample.RawSampleCount; i++)
+                    trial.AppliedLutFactorsByRawSample.Add(factorAtSample);
+            }
+
             // Preserve the capture-time residual for the training-state hit check.
             // DesktopSensCalibrator independently replays raw samples in
             // deterministic zone order on every calibration pass; it does
@@ -1409,6 +1434,65 @@ namespace grapher.DesktopSens.Views
                 maxAngularErrorDegrees: _sensitivityFinderMode
                     ? double.MaxValue
                     : DesktopSensCalibrator.MaxAngularErrorDegrees);
+
+            // Apply the strict gate only to cardinal Train flicks. Sensitivity
+            // Finder keeps its own capture policy and diagnostic/evaluation
+            // trials never alter training state.
+            DesktopSensTrialGateResult trainGateResult = null;
+            if (!_sensitivityFinderMode && _isTrainingMode && !trial.IsEvaluationOnly &&
+                !trial.WasRejected && _selectedDistanceZone >= 0)
+            {
+                int gateStartZone = _selectedDistanceZone - 1;
+                if (TrainingGeometry.Current.UseMidEndPoints)
+                {
+                    if (_selectedDistanceZone <= 1)
+                        gateStartZone = -1;
+                    else
+                        gateStartZone = (_selectedDistanceZone & 1) == 0
+                            ? _selectedDistanceZone - 1
+                            : _selectedDistanceZone - 2;
+                }
+                double zoneStartCm = gateStartZone >= 0
+                    ? TrainingGeometry.Current.MarkerDistanceCm(gateStartZone, _maxDistanceCm)
+                    : 0.0;
+                trainGateResult = DesktopSensTrialGate.Evaluate(
+                    trial, zoneStartCm, _selectedDistanceZone == 0);
+                if (!trainGateResult.Accepted)
+                {
+                    trial.WasRejected = true;
+                    trial.RejectionReason = trainGateResult.Reason;
+                    DesktopSensLog.Warn(
+                        "Train trial gate rejected: reason=" + trainGateResult.Reason +
+                        " rawFlickCm=" + trial.FlickDistanceCm.ToString("0.000") +
+                        " targetCm=" + trial.TargetDistanceCm.ToString("0.000") +
+                        " zoneStartCm=" + zoneStartCm.ToString("0.000") +
+                        " durationMs=" + trial.DurationMs.ToString("0.0"));
+                    string gateMessage;
+                    switch (trainGateResult.Reason)
+                    {
+                        case TrialRejectionReason.DidNotEnterZone:
+                            gateMessage = "فلیک هنوز در زون قبلی مانده؛ End زون قبلی را دوباره کالیبره کن";
+                            break;
+                        case TrialRejectionReason.OvershootOutOfRange:
+                            gateMessage = "فلیک بیش از حد از هدف عبور کرد؛ این trial رد شد.";
+                            break;
+                        case TrialRejectionReason.DurationOutOfRange:
+                            gateMessage = "فلیک بیش از حد طولانی یا کوتاه بود؛ یک flick سریع و پیوسته انجام بده.";
+                            break;
+                        case TrialRejectionReason.LongPause:
+                            gateMessage = "وسط فلیک مکث طولانی ثبت شد؛ حرکت را پیوسته انجام بده.";
+                            break;
+                        case TrialRejectionReason.PeakVelocityTooLow:
+                            gateMessage = "سرعت فلیک خیلی کم بود؛ با حرکت سریع‌تر تکرار کن.";
+                            break;
+                        default:
+                            gateMessage = "فلیک برای کالیبراسیون معتبر نبود؛ دوباره تلاش کن.";
+                            break;
+                    }
+                    DesktopSensToast.Show(this, gateMessage);
+                }
+            }
+
 
             DesktopSensLog.Warn(
                 (_sensitivityFinderMode ? "Sensitivity Finder" : "Train") +
@@ -1457,6 +1541,16 @@ namespace grapher.DesktopSens.Views
             }
             else
             {
+                // Capture only bounded calibration state. Trial history is never
+                // serialized; Undo removes the appended tail trial by count.
+                var undoCaptureTimer = System.Diagnostics.Stopwatch.StartNew();
+                _lastTrialUndoSnapshot = DesktopSensTrainingUndoSnapshot.Capture(
+                    _profile, _angleZoneCounts, _distanceZoneCounts);
+                undoCaptureTimer.Stop();
+                DesktopSensLog.Info(
+                    "Training undo snapshot captured: trials=" + _profile.Trials.Count +
+                    " cells=" + (_profile.CellTrainingStates != null ? _profile.CellTrainingStates.Count : 0) +
+                    " elapsedMs=" + undoCaptureTimer.Elapsed.TotalMilliseconds.ToString("0.000"));
                 _profile.Trials.Add(trial);
             }
             // Clear the completed trial's marker before the A/B callback can

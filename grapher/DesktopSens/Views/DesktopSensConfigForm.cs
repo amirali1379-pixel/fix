@@ -789,6 +789,16 @@ namespace grapher.DesktopSens.Views
                 else
                     _profile.CellTrainingStates.Clear();
 
+                // This is an explicit full-training reset. Frozen LUT node
+                // ownership and its build caches must be reset with cell state.
+                if (_profile.FrozenSampleLutNodeFactorsByAngleZone != null)
+                    _profile.FrozenSampleLutNodeFactorsByAngleZone.Clear();
+                if (_profile.LastBuiltLutPointsByAngleZone != null)
+                    _profile.LastBuiltLutPointsByAngleZone.Clear();
+                if (_profile.LastBuiltLutBaseFactorByAngleZone != null)
+                    _profile.LastBuiltLutBaseFactorByAngleZone.Clear();
+                CalibrationResidualCache.Clear(_profile);
+
                 if (_profile.Trials == null)
                     _profile.Trials = new List<DesktopSensTrial>();
                 else
@@ -2229,6 +2239,47 @@ namespace grapher.DesktopSens.Views
                             profile.ModelVersion < DesktopSensConstants.CurrentModelVersion)
                         {
                             int previousModelVersion = profile.ModelVersion;
+                            // Model v11 introduces persisted sample-fit frozen
+                            // nodes. Legacy green cells are frozen at their
+                            // first sample-fit build from the historical accepted
+                            // raw trials; the fit may make a one-time migration
+                            // adjustment, after which those nodes remain exact.
+                            if (previousModelVersion < 11)
+                            {
+                                if (profile.FrozenSampleLutNodeFactorsByAngleZone == null)
+                                    profile.FrozenSampleLutNodeFactorsByAngleZone =
+                                        new Dictionary<int, double[]>();
+                                bool hasPersistedFrozenNodes = false;
+                                foreach (var nodeArray in profile.FrozenSampleLutNodeFactorsByAngleZone.Values)
+                                {
+                                    if (nodeArray == null) continue;
+                                    foreach (double factor in nodeArray)
+                                    {
+                                        if (!double.IsNaN(factor) && !double.IsInfinity(factor) && factor > 0.0)
+                                        {
+                                            hasPersistedFrozenNodes = true;
+                                            break;
+                                        }
+                                    }
+                                    if (hasPersistedFrozenNodes) break;
+                                }
+                                if (hasPersistedFrozenNodes)
+                                    DesktopSensLog.Info(
+                                        "DesktopSens model v11 migration: persisted frozen LUT nodes " +
+                                        "were found and will be preserved.");
+                                else
+                                    DesktopSensLog.Warn(
+                                        "DesktopSens model v11 migration: pre-existing green cells will " +
+                                        "freeze from their historical trials on first sample-fit LUT build.");
+                                CalibrationResidualCache.Clear(profile);
+                            }
+                            if (previousModelVersion < 12)
+                            {
+                                DesktopSensLog.Info(
+                                    "DesktopSens model v12 migration: divergence guard fields initialized " +
+                                    "to safe defaults; existing trials and frozen LUT nodes are preserved.");
+                            }
+
                             // Model v8 stores the Base Sens factor alongside each
                             // sample-fit anchor. Earlier versions cannot reliably
                             // renormalize anchors after a Base Sens change, so discard
@@ -2254,6 +2305,17 @@ namespace grapher.DesktopSens.Views
                                     (trial.MouseDPI > 0 ? trial.MouseDPI : profile.EffectiveCpi);
                                 double maxTurnDistanceCm = ZoneCalculations.MaxDistanceCmForTurnDegrees(trialDpi, trialSensitivity);
                                 trial.DistanceZoneIndex = ZoneCalculations.DistanceToZoneIndex(trial.TargetDistanceCm, maxTurnDistanceCm);
+                            }
+                            if (previousModelVersion < 13)
+                            {
+                                DesktopSensProfileMigration.MigrationResult migration =
+                                    DesktopSensProfileMigration.MigrateToVersion13(profile);
+                                DesktopSensLog.Warn(
+                                    "DesktopSens model v13 migration completed: reviewedCells=" +
+                                    migration.CellsMarkedNeedsReview +
+                                    " rejectedTrials=" + migration.TrialsMarkedRejected +
+                                    " unreviewableLegacyTrials=" + migration.TrialsWithoutRawSamples +
+                                    ". Historical trials were retained; old frozen nodes were discarded.");
                             }
                             DesktopSensCalibrator.Calibrate(profile);
                             // Legacy profiles predate separate Finder/Train trial histories.

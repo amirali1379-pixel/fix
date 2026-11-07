@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 
 namespace grapher.DesktopSens.Models
@@ -525,21 +526,20 @@ namespace grapher.DesktopSens.Models
                 dir.SuccessfulSamples = sum;
             }
 
-            // Build the LUT points ONLY from green (Verified +
-            // PrecisionVerified) cells. A cell that is yellow (calibrated
-            // but not yet precision-stable) or unobserved contributes NO
-            // point — so when a new cell goes green, it can only APPEND
-            // its point, never change any earlier point. This is the
-            // per-point isolation guarantee for the LUT path.
+            // Legacy median-speed LUT mode (UseSampleFitLut=false) uses
+            // only green (Verified + PrecisionVerified) cells. That legacy
+            // path's points are cell-derived; its isolation comments apply
+            // only to BuildLutPoints below.
             //
-            // The speed for each green cell is the MEDIAN of that cell's
-            // accepted-trial flick speeds (FlickDistanceCm / DurationMs *
-            // 1000), matching the formula in
-            // DesktopSensCalibrator.TryBuildCurveSample. The factor is
-            // the cell's CellAccelerationFactor (NOT the
-            // confidence-weighted blend used by AccelerationByDistanceZone
-            // — the LUT point represents the cell's actual calibrated
-            // factor; below/above the green range the applier uses 1.0).
+            // Sample-fit mode (UseSampleFitLut=true) also includes yellow
+            // trials at reduced weight, but verified green cell nodes are
+            // frozen by exact constraints and are never re-fitted. Its
+            // isolation guarantee is node-based, not a claim that the curve
+            // only appends points or that yellow trials are ignored.
+            //
+            // Legacy cell speed is the median accepted-trial mean flick speed
+            // (FlickDistanceCm / DurationMs * 1000), matching
+            // DesktopSensCalibrator.TryBuildCurveSample.
             //
             // NEW (Model v6): prefer the sample-fit LUT when the profile
             // enables it. The sample-fit path uses raw per-sample
@@ -556,10 +556,19 @@ namespace grapher.DesktopSens.Models
                 // when no sample-fit curve could be produced.
                 if (dir.LutPoints == null || dir.LutPoints.Count == 0)
                 {
-                    DesktopSensLog.Warn(
-                        "Sample-fit produced no curve for angleZone=" + angleZone +
-                        "; falling back to legacy median-speed LUT for stored trials.");
-                    dir.LutPoints = BuildLutPoints(profile, angleZone, distanceZoneCount);
+                    if (HasAcceptedSampleFitTrialForAngleZone(profile, angleZone))
+                    {
+                        DesktopSensLog.Warn(
+                            "Sample-fit produced no curve for angleZone=" + angleZone +
+                            "; falling back to legacy median-speed LUT for stored trials.");
+                        dir.LutPoints = BuildLutPoints(profile, angleZone, distanceZoneCount);
+                    }
+                    else
+                    {
+                        // Empty cardinal directions are normal during progressive
+                        // training. Avoid repeated empty-fit/fallback diagnostics.
+                        dir.LutPoints = new List<LutPoint>();
+                    }
                 }
             }
             else
@@ -589,6 +598,24 @@ namespace grapher.DesktopSens.Models
         /// resulting points are in ascending speed order (faster flicks
         /// land in farther distance zones on average).
         /// </summary>
+        private static bool HasAcceptedSampleFitTrialForAngleZone(
+            DesktopSensProfile profile, int angleZone)
+        {
+            if (profile == null || profile.Trials == null) return false;
+            foreach (var trial in profile.Trials)
+            {
+                if (trial == null || trial.IsEvaluationOnly || trial.IsSessionAnchor ||
+                    trial.IsCalibrationExcluded || trial.WasRejected ||
+                    !trial.HasMovementMeasurement || trial.AngleZoneIndex != angleZone ||
+                    !IsFinite(trial.FlickDistanceCm) || trial.FlickDistanceCm <= 0.0 ||
+                    !IsFinite(trial.DurationMs) || trial.DurationMs <= 0.0)
+                    continue;
+                if (trial.RawSamples != null && trial.RawSamples.Count >= 2)
+                    return true;
+            }
+            return false;
+        }
+
         private static List<LutPoint> BuildLutPoints(
             DesktopSensProfile profile,
             int angleZone,
@@ -825,7 +852,7 @@ namespace grapher.DesktopSens.Models
                 int cellIndex = DesktopSensProfile.GetCellIndex(angleZone, trial.DistanceZoneIndex);
                 if (profile.CellTrainingStates == null ||
                     !profile.CellTrainingStates.TryGetValue(cellIndex, out var state) ||
-                    state == null) continue;
+                    state == null || state.IsDiverging || state.NeedsReview) continue;
 
                 bool isGreen = state.Verified && state.PrecisionVerified;
                 bool isYellow = !isGreen && state.AcceptedAttemptCount > 0;
@@ -852,45 +879,38 @@ namespace grapher.DesktopSens.Models
 
             if (eligible.Count == 0) return points;
 
-            // NEW (Model v6, per-point isolation): feed the previously-built
-            // LUT points for this angle zone as anchors. Verified green cells
-            // contribute their (speed, factor) so the new fit cannot rewrite
-            // the curve at speeds the user already verified. This is what
-            // keeps the per-cell factors of earlier zones stable while the
-            // user keeps training later zones — without it, every new trial
-            // would re-fit the whole curve and could drift an earlier zone's
-            // factor away from what the driver currently applies.
-            List<(double speedCmPerSec, double factor)> anchors = null;
-            if (profile.LastBuiltLutPointsByAngleZone != null &&
-                profile.LastBuiltLutPointsByAngleZone.TryGetValue(angleZone, out var prevPoints) &&
-                prevPoints != null && prevPoints.Count > 0 &&
-                profile.LastBuiltLutBaseFactorByAngleZone != null &&
-                profile.LastBuiltLutBaseFactorByAngleZone.TryGetValue(angleZone, out double previousBaseFactor) &&
-                IsFinite(previousBaseFactor) && previousBaseFactor > 0.0 &&
-                IsFinite(targetBaseFactor) && targetBaseFactor > 0.0)
-            {
-                // Preserve the previously-applied TOTAL directional output
-                // when Base Sens changes: oldBase * oldLut == newBase * newLut.
-                double anchorScale = previousBaseFactor / targetBaseFactor;
-                anchors = new List<(double, double)>(prevPoints.Count);
-                foreach (var p in prevPoints)
-                {
-                    double factor = p.Factor * anchorScale;
-                    if (IsFinite(p.InputSpeedCmPerSec) && p.InputSpeedCmPerSec > 0.0 &&
-                        IsFinite(factor) && factor > 0.0)
-                        anchors.Add((p.InputSpeedCmPerSec, factor));
-                }
-                if (anchors.Count == 0) anchors = null;
-            }
+            // Soft anchor fitting is intentionally removed: persisted node
+            // constraints are the sole source of frozen-cell isolation.
 
+            // Exact per-node frozen factors are persisted on the profile.
+            // These constraints supersede historical soft anchors.
+            double[] frozenNodes = null;
+            if (profile.FrozenSampleLutNodeFactorsByAngleZone != null &&
+                profile.FrozenSampleLutNodeFactorsByAngleZone.TryGetValue(angleZone, out var persistedFrozen) &&
+                persistedFrozen != null &&
+                persistedFrozen.Length == DesktopSensConstants.SampleLutDefaultNodes)
+                frozenNodes = (double[])persistedFrozen.Clone();
+
+            // Session bias is applied only by DesktopSensCalibrator's
+            // residual/chain reconstruction. This LUT fit uses raw projected
+            // samples and base-factor normalization (targetScales), so session
+            // bias is not a fit input. Even if residuals are rebuilt for a new
+            // session, frozen node factors remain exact solver constraints.
+            var sampleFitTimer = Stopwatch.StartNew();
             SampleLutFitter.FitResult fit = SampleLutFitter.Fit(
                 eligible,
-                anchors,
+                null,
                 DesktopSensConstants.SampleLutDefaultNodes,
                 includeYellowCells: true,
                 trialWeights: trialWeights,
                 targetScale: 1.0,
-                targetScales: targetScales);
+                targetScales: targetScales,
+                fixedNodeFactors: frozenNodes);
+            sampleFitTimer.Stop();
+            DesktopSensLog.Info("SampleLut fit stopwatch: angleZone=" + angleZone +
+                " trials=" + eligible.Count +
+                " nodes=" + DesktopSensConstants.SampleLutDefaultNodes +
+                " elapsedMs=" + sampleFitTimer.Elapsed.TotalMilliseconds.ToString("0.00"));
             if (fit == null || !fit.IsValid)
             {
                 DesktopSensLog.Warn(
@@ -902,63 +922,381 @@ namespace grapher.DesktopSens.Models
 
             var builtPoints = SampleLutFitter.ToLutPoints(fit);
 
-            // NEW (Model v6, per-point isolation): persist the freshly-built
-            // LUT points so the next build sees them as anchors. Only green
-            // cells (Verified + PrecisionVerified) contribute to the anchor
-            // set — yellow-cell data is allowed to drift between fits so a
-            // noisy yellow trial cannot pin the curve permanently.
-            if (profile.LastBuiltLutPointsByAngleZone == null)
-                profile.LastBuiltLutPointsByAngleZone = new Dictionary<int, List<LutPoint>>();
-            if (profile.LastBuiltLutBaseFactorByAngleZone == null)
-                profile.LastBuiltLutBaseFactorByAngleZone = new Dictionary<int, double>();
-            var greenSpeedsByCell = new Dictionary<int, List<double>>();
+            // Freeze node values at the moment cells are green. Existing
+            // frozen values are never refreshed from a later fit. A newly
+            // green cell owns the nodes up to its accepted-trial median speed.
+            if (profile.FrozenSampleLutNodeFactorsByAngleZone == null)
+                profile.FrozenSampleLutNodeFactorsByAngleZone =
+                    new Dictionary<int, double[]>();
+            double[] frozen = profile.FrozenSampleLutNodeFactorsByAngleZone.TryGetValue(angleZone, out var stored)
+                && stored != null && stored.Length == fit.NodeFactors.Length
+                    ? (double[])stored.Clone()
+                    : CreateFreeNodeArray(fit.NodeFactors.Length);
+
+            var greenSpeedSamplesByCell =
+                new Dictionary<int, List<(double speed, double displacementWeight)>>();
+            var rawSpeedDiagnosticsByCell = new Dictionary<int, List<double>>();
+            var greenTrialCountByCell = new Dictionary<int, int>();
             foreach (var trial in eligible)
             {
                 int cellIndex = DesktopSensProfile.GetCellIndex(angleZone, trial.DistanceZoneIndex);
                 if (profile.CellTrainingStates == null ||
                     !profile.CellTrainingStates.TryGetValue(cellIndex, out var state) ||
-                    state == null || !state.Verified || !state.PrecisionVerified) continue;
-                if (!IsFinite(trial.FlickDistanceCm) || trial.FlickDistanceCm <= 0.0 ||
-                    !IsFinite(trial.DurationMs) || trial.DurationMs <= 0.0) continue;
-                double speed = trial.FlickDistanceCm * 1000.0 / trial.DurationMs;
-                if (!IsFinite(speed) || speed <= 0.0) continue;
-                if (!greenSpeedsByCell.TryGetValue(cellIndex, out var cellSpeeds))
+                    state == null || !state.Verified || !state.PrecisionVerified)
+                    continue;
+
+                var rawSpeedDiagnostics = new List<double>();
+                List<(double speed, double displacementWeight)> cellSamples =
+                    GetProjectedSpeedSamplesForFreeze(trial, rawSpeedDiagnostics);
+                if (cellSamples.Count == 0 &&
+                    IsFinite(trial.FlickDistanceCm) && trial.FlickDistanceCm > 0.0 &&
+                    IsFinite(trial.DurationMs) && trial.DurationMs > 0.0)
                 {
-                    cellSpeeds = new List<double>();
-                    greenSpeedsByCell[cellIndex] = cellSpeeds;
+                    // Legacy profiles without raw samples: use their recorded
+                    // mean speed as a conservative compatibility fallback.
+                    cellSamples.Add((trial.FlickDistanceCm * 1000.0 / trial.DurationMs,
+                        trial.FlickDistanceCm));
                 }
-                cellSpeeds.Add(speed);
+                if (cellSamples.Count == 0) continue;
+                if (!greenSpeedSamplesByCell.TryGetValue(cellIndex, out var accumulated))
+                {
+                    accumulated = new List<(double, double)>();
+                    greenSpeedSamplesByCell[cellIndex] = accumulated;
+                }
+                accumulated.AddRange(cellSamples);
+                if (!rawSpeedDiagnosticsByCell.TryGetValue(cellIndex, out var rawAccumulated))
+                {
+                    rawAccumulated = new List<double>();
+                    rawSpeedDiagnosticsByCell[cellIndex] = rawAccumulated;
+                }
+                rawAccumulated.AddRange(rawSpeedDiagnostics);
+                if (!greenTrialCountByCell.ContainsKey(cellIndex))
+                    greenTrialCountByCell[cellIndex] = 0;
+                greenTrialCountByCell[cellIndex]++;
             }
 
-            var greenAnchors = new List<LutPoint>();
-            foreach (var pair in greenSpeedsByCell)
+            int newlyFrozenNodeCount = 0;
+            foreach (var cell in greenSpeedSamplesByCell)
             {
-                // One median-speed anchor per verified cell prevents cells
-                // with more recorded attempts from receiving extra anchor
-                // weight merely because they have more trials.
-                List<double> cellSpeeds = pair.Value;
-                cellSpeeds.Sort();
-                int mid = cellSpeeds.Count / 2;
-                double speed = cellSpeeds.Count % 2 == 0
-                    ? (cellSpeeds[mid - 1] + cellSpeeds[mid]) * 0.5
-                    : cellSpeeds[mid];
+                // Weighted P90 uses displacement magnitude as sample weight;
+                // the speed itself is the shared cleaned 2-D RawAccel speed.
+                double p90Speed = WeightedPercentile(cell.Value, 0.90);
+                if (!IsFinite(p90Speed) || p90Speed <= 0.0) continue;
 
-                // Anchor the replacement LUT's actual fitted value,
-                // not CellAccelerationFactor (which is only the residual
-                // correction relative to the previously active LUT).
-                double factor = EvaluateLutPoints(builtPoints, speed);
-                if (IsFinite(factor) && factor > 0.0)
-                    greenAnchors.Add(new LutPoint(speed, factor, 1.0));
+                double totalDisplacementWeight = 0.0;
+                double weightedSpeedSum = 0.0;
+                foreach (var sample in cell.Value)
+                {
+                    totalDisplacementWeight += sample.displacementWeight;
+                    weightedSpeedSum += sample.speed * sample.displacementWeight;
+                }
+                double weightedMeanSpeed = totalDisplacementWeight > 0.0
+                    ? weightedSpeedSum / totalDisplacementWeight : double.NaN;
+
+                int freezeThroughNode = FindFreezeThroughNode(
+                    fit.NodeSpeedCmPerSec, p90Speed);
+                bool usedMeanSpeedGuard = false;
+                if (freezeThroughNode == fit.NodeSpeedCmPerSec.Length - 1 &&
+                    IsFinite(weightedMeanSpeed) && weightedMeanSpeed > 0.0 &&
+                    p90Speed / weightedMeanSpeed >
+                        DesktopSensConstants.SampleLutFreezeP90MeanSpeedRatioLimit)
+                {
+                    double guardedP90 = weightedMeanSpeed *
+                        DesktopSensConstants.SampleLutFreezeFallbackMeanSpeedMultiplier;
+                    if (guardedP90 < p90Speed)
+                    {
+                        p90Speed = guardedP90;
+                        freezeThroughNode = FindFreezeThroughNode(
+                            fit.NodeSpeedCmPerSec, p90Speed);
+                        usedMeanSpeedGuard = true;
+                    }
+                    DesktopSensLog.Warn("SampleLut freeze P90 anomaly guarded: angleZone=" +
+                        angleZone + " cell=" + cell.Key +
+                        " rawP90ToMean=" + (WeightedPercentile(cell.Value, 0.90) /
+                            weightedMeanSpeed).ToString("0.00") +
+                        " meanSpeedCmPerSec=" + weightedMeanSpeed.ToString("0.00") +
+                        " guardedP90CmPerSec=" + p90Speed.ToString("0.00"));
+                }
+
+                for (int node = 0; node <= freezeThroughNode; node++)
+                {
+                    if (!IsFinite(frozen[node]) || frozen[node] <= 0.0)
+                    {
+                        frozen[node] = fit.NodeFactors[node];
+                        newlyFrozenNodeCount++;
+                    }
+                }
+
+                List<double> before = rawSpeedDiagnosticsByCell.TryGetValue(cell.Key, out var rawStats)
+                    ? rawStats : new List<double>();
+                List<double> after = new List<double>();
+                foreach (var sample in cell.Value) after.Add(sample.speed);
+                DesktopSensLog.Info("SampleLut freeze cell: angleZone=" + angleZone +
+                    " cell=" + cell.Key +
+                    " trials=" + (greenTrialCountByCell.TryGetValue(cell.Key, out var trialCount) ? trialCount : 0) +
+                    " samplesBefore=" + before.Count + " samplesAfter=" + after.Count +
+                    " meanSpeedCmPerSec=" + weightedMeanSpeed.ToString("0.00") +
+                    " beforeP50/P90/max=" + PercentileUnweighted(before, 0.50).ToString("0.00") + "/" +
+                        PercentileUnweighted(before, 0.90).ToString("0.00") + "/" +
+                        MaxValue(before).ToString("0.00") +
+                    " afterP50/P90/max=" + PercentileUnweighted(after, 0.50).ToString("0.00") + "/" +
+                        PercentileUnweighted(after, 0.90).ToString("0.00") + "/" +
+                        MaxValue(after).ToString("0.00") +
+                    " weightedP90=" + p90Speed.ToString("0.00") +
+                    " freezeThroughNode=" + freezeThroughNode +
+                    " nodeSpeedCmPerSec=" + fit.NodeSpeedCmPerSec[freezeThroughNode].ToString("0.00") +
+                    " meanSpeedGuard=" + usedMeanSpeedGuard);
             }
-            // If no green cells are present yet, keep the previously stored
-            // anchors (they will be overwritten once a cell turns green).
-            if (greenAnchors.Count > 0)
-            {
-                profile.LastBuiltLutPointsByAngleZone[angleZone] = greenAnchors;
-                profile.LastBuiltLutBaseFactorByAngleZone[angleZone] = targetBaseFactor;
-            }
+            profile.FrozenSampleLutNodeFactorsByAngleZone[angleZone] = frozen;
+            if (newlyFrozenNodeCount > 0)
+                DesktopSensLog.Info("SampleLut freeze completed: angleZone=" + angleZone +
+                    " greenCellsConsidered=" + greenSpeedSamplesByCell.Count +
+                    " newlyFrozenNodes=" + newlyFrozenNodeCount);
+
+            // Maintain the legacy anchor cache for compatibility only; it is
+            // no longer an input to the sample-fit solver.
+            if (profile.LastBuiltLutPointsByAngleZone == null)
+                profile.LastBuiltLutPointsByAngleZone = new Dictionary<int, List<LutPoint>>();
+            if (profile.LastBuiltLutBaseFactorByAngleZone == null)
+                profile.LastBuiltLutBaseFactorByAngleZone = new Dictionary<int, double>();
+            profile.LastBuiltLutPointsByAngleZone[angleZone] = builtPoints;
+            profile.LastBuiltLutBaseFactorByAngleZone[angleZone] = targetBaseFactor;
 
             return builtPoints;
+        }
+
+        /// <summary>
+        /// Explicitly reopen a cell's LUT ownership and every later node.
+        /// Call when a previously-green cell is intentionally recalibrated.
+        /// </summary>
+        public static bool UnfreezeSampleLutFromCell(
+            DesktopSensProfile profile, int angleZone, int distanceZone)
+        {
+            if (profile == null || profile.FrozenSampleLutNodeFactorsByAngleZone == null ||
+                !profile.FrozenSampleLutNodeFactorsByAngleZone.TryGetValue(angleZone, out var frozen) ||
+                frozen == null || frozen.Length != DesktopSensConstants.SampleLutDefaultNodes)
+                return false;
+
+            var currentCellSamples = new List<(double speed, double displacementWeight)>();
+            var previousCellSamples = new List<(double speed, double displacementWeight)>();
+            if (profile.Trials != null)
+            {
+                foreach (var trial in profile.Trials)
+                {
+                    if (trial == null || trial.IsEvaluationOnly || trial.IsSessionAnchor ||
+                        trial.IsCalibrationExcluded || trial.WasRejected ||
+                        trial.AngleZoneIndex != angleZone)
+                        continue;
+                    var sampleSpeeds = GetProjectedSpeedSamplesForFreeze(trial);
+                    if (sampleSpeeds.Count == 0 &&
+                        IsFinite(trial.FlickDistanceCm) && trial.FlickDistanceCm > 0.0 &&
+                        IsFinite(trial.DurationMs) && trial.DurationMs > 0.0)
+                        sampleSpeeds.Add((trial.FlickDistanceCm * 1000.0 / trial.DurationMs,
+                            trial.FlickDistanceCm));
+
+                    if (trial.DistanceZoneIndex == distanceZone)
+                        currentCellSamples.AddRange(sampleSpeeds);
+                    else if (distanceZone > 0 && trial.DistanceZoneIndex == distanceZone - 1)
+                    {
+                        int previousCellIndex = DesktopSensProfile.GetCellIndex(angleZone, distanceZone - 1);
+                        bool previousCellGreen = profile.CellTrainingStates != null &&
+                            profile.CellTrainingStates.TryGetValue(previousCellIndex, out var previousState) &&
+                            previousState != null && previousState.Verified && previousState.PrecisionVerified;
+                        if (previousCellGreen)
+                            previousCellSamples.AddRange(sampleSpeeds);
+                    }
+                }
+            }
+            if (currentCellSamples.Count == 0)
+            {
+                // A trial-deletion/reset path may remove the cell's samples
+                // before it asks for unfreeze. The previous cell's P90 still
+                // identifies the ownership boundary; if unavailable, release
+                // conservatively from node zero rather than retaining stale
+                // frozen constraints.
+                DesktopSensLog.Warn("SampleLut unfreeze has no current-cell speed samples; " +
+                    "using previous-cell boundary or releasing all nodes: angleZone=" +
+                    angleZone + " distanceZone=" + distanceZone);
+            }
+
+            // Node ownership follows each green cell's weighted-P90 ceil
+            // boundary. Preserve the prior green cell's inclusive boundary
+            // and release the following node onward (current cell + higher).
+            int firstNodeToUnfreeze = 0;
+            if (distanceZone > 0 && previousCellSamples.Count > 0)
+            {
+                double previousP90 = WeightedPercentile(previousCellSamples, 0.90);
+                if (IsFinite(previousP90) && previousP90 > 0.0)
+                {
+                    int previousFreezeThrough = frozen.Length - 1;
+                    for (int node = 0; node < frozen.Length; node++)
+                    {
+                        double nodeSpeed = GetFixedNodeSpeed(node, frozen.Length);
+                        if (nodeSpeed >= previousP90)
+                        {
+                            previousFreezeThrough = node;
+                            break;
+                        }
+                    }
+                    firstNodeToUnfreeze = Math.Min(frozen.Length, previousFreezeThrough + 1);
+                }
+            }
+
+            int unfrozen = 0;
+            for (int node = 0; node < frozen.Length; node++)
+            {
+                if (node < firstNodeToUnfreeze) continue;
+                if (IsFinite(frozen[node]) && frozen[node] > 0.0)
+                    unfrozen++;
+                frozen[node] = 0.0;
+            }
+            profile.FrozenSampleLutNodeFactorsByAngleZone[angleZone] = frozen;
+            DesktopSensLog.Info("SampleLut unfreeze completed: angleZone=" + angleZone +
+                " distanceZone=" + distanceZone + " releasedNodes=" + unfrozen +
+                " firstNode=" + firstNodeToUnfreeze);
+            return unfrozen > 0;
+        }
+
+        private static List<(double speed, double displacementWeight)> GetProjectedSpeedSamplesForFreeze(
+            DesktopSensTrial trial, List<double> rawSpeedDiagnostics = null)
+        {
+            var result = new List<(double, double)>();
+            if (trial == null || trial.RawSamples == null || trial.RawSamples.Count < 2 ||
+                !IsFinite(trial.EffectiveCpi) || trial.EffectiveCpi <= 0.0)
+                return result;
+
+            foreach (SampleLutCachedSample cachedSample in
+                SampleLutSampleProcessor.GetCachedSamples(trial))
+            {
+                double rawSpeed = cachedSample.RawSpeedCmPerSec;
+                if (rawSpeedDiagnostics != null && IsFinite(rawSpeed) && rawSpeed > 0.0)
+                    rawSpeedDiagnostics.Add(rawSpeed);
+                if (!cachedSample.IsUsable) continue;
+
+                double speed = cachedSample.SpeedCmPerSec;
+                double weight = Math.Abs(cachedSample.ProjectedDisplacementCm);
+                if (IsFinite(speed) && speed > 0.0 && IsFinite(weight) && weight > 0.0)
+                    result.Add((speed, weight));
+            }
+            return result;
+        }
+
+        private static int FindFreezeThroughNode(double[] nodeSpeeds, double p90Speed)
+        {
+            if (nodeSpeeds == null || nodeSpeeds.Length == 0) return 0;
+            for (int node = 0; node < nodeSpeeds.Length; node++)
+                if (nodeSpeeds[node] >= p90Speed) return node;
+            return nodeSpeeds.Length - 1;
+        }
+
+        private static double PercentileUnweighted(IList<double> values, double percentile)
+        {
+            if (values == null || values.Count == 0) return double.NaN;
+            var sorted = new List<double>();
+            foreach (double value in values)
+                if (IsFinite(value) && value > 0.0) sorted.Add(value);
+            if (sorted.Count == 0) return double.NaN;
+            sorted.Sort();
+            double p = Math.Max(0.0, Math.Min(1.0, percentile));
+            int index = (int)Math.Ceiling(p * sorted.Count) - 1;
+            index = Math.Max(0, Math.Min(sorted.Count - 1, index));
+            return sorted[index];
+        }
+
+        private static double MaxValue(IList<double> values)
+        {
+            if (values == null || values.Count == 0) return double.NaN;
+            double max = double.NaN;
+            foreach (double value in values)
+                if (IsFinite(value) && (double.IsNaN(max) || value > max)) max = value;
+            return max;
+        }
+
+        private static double WeightedPercentile(
+            IList<(double speed, double displacementWeight)> samples,
+            double percentile)
+        {
+            if (samples == null || samples.Count == 0) return double.NaN;
+            var sorted = new List<(double speed, double weight)>();
+            double totalWeight = 0.0;
+            foreach (var sample in samples)
+            {
+                if (!IsFinite(sample.speed) || sample.speed <= 0.0 ||
+                    !IsFinite(sample.displacementWeight) || sample.displacementWeight <= 0.0)
+                    continue;
+                sorted.Add((sample.speed, sample.displacementWeight));
+                totalWeight += sample.displacementWeight;
+            }
+            if (sorted.Count == 0 || totalWeight <= 0.0) return double.NaN;
+            sorted.Sort((a, b) => a.speed.CompareTo(b.speed));
+            double targetWeight = Math.Max(0.0, Math.Min(1.0, percentile)) * totalWeight;
+            double accumulated = 0.0;
+            foreach (var sample in sorted)
+            {
+                accumulated += sample.weight;
+                if (accumulated >= targetWeight) return sample.speed;
+            }
+            return sorted[sorted.Count - 1].speed;
+        }
+
+        /// <summary>
+        /// Checks whether this cell has at least one free LUT node at or below
+        /// its cleaned-sample P90. A cell whose samples are entirely inside the
+        /// frozen prefix cannot contribute a new segment and must not turn green.
+        /// </summary>
+        public static bool HasFreeSampleLutNodeForCell(
+            DesktopSensProfile profile, int angleZone, int distanceZone, out int freeNodeCount)
+        {
+            freeNodeCount = DesktopSensConstants.SampleLutDefaultNodes;
+            if (profile == null || profile.FrozenSampleLutNodeFactorsByAngleZone == null ||
+                !profile.FrozenSampleLutNodeFactorsByAngleZone.TryGetValue(angleZone, out var frozen) ||
+                frozen == null || frozen.Length != DesktopSensConstants.SampleLutDefaultNodes)
+                return true;
+
+            var samples = new List<(double speed, double displacementWeight)>();
+            if (profile.Trials != null)
+            {
+                foreach (DesktopSensTrial trial in profile.Trials)
+                {
+                    if (trial == null || trial.AngleZoneIndex != angleZone ||
+                        trial.DistanceZoneIndex != distanceZone || trial.IsEvaluationOnly ||
+                        trial.IsSessionAnchor || trial.IsCalibrationExcluded || trial.WasRejected)
+                        continue;
+                    List<(double speed, double displacementWeight)> projected =
+                        GetProjectedSpeedSamplesForFreeze(trial);
+                    if (projected.Count == 0 && IsFinite(trial.FlickDistanceCm) &&
+                        trial.FlickDistanceCm > 0.0 && IsFinite(trial.DurationMs) && trial.DurationMs > 0.0)
+                        projected.Add((trial.FlickDistanceCm * 1000.0 / trial.DurationMs, trial.FlickDistanceCm));
+                    samples.AddRange(projected);
+                }
+            }
+            double p90 = WeightedPercentile(samples, 0.90);
+            if (!IsFinite(p90) || p90 <= 0.0) return true;
+
+            freeNodeCount = 0;
+            for (int node = 0; node < frozen.Length; node++)
+            {
+                if (IsFinite(frozen[node]) && frozen[node] > 0.0) continue;
+                if (GetFixedNodeSpeed(node, frozen.Length) <= p90)
+                    freeNodeCount++;
+            }
+            return freeNodeCount > 0;
+        }
+
+        private static double GetFixedNodeSpeed(int node, int nodeCount)
+        {
+            if (nodeCount <= 1) return DesktopSensConstants.SampleLutMinSpeedCmPerSec;
+            double logMin = Math.Log(DesktopSensConstants.SampleLutMinSpeedCmPerSec);
+            double logMax = Math.Log(DesktopSensConstants.SampleLutMaxSpeedCmPerSec);
+            double t = (double)node / (nodeCount - 1);
+            return Math.Exp(logMin + (logMax - logMin) * t);
+        }
+
+        private static double[] CreateFreeNodeArray(int count)
+        {
+            var values = new double[count];
+            for (int i = 0; i < count; i++) values[i] = 0.0;
+            return values;
         }
 
         private static double EvaluateLutPoints(IList<LutPoint> points, double speed)

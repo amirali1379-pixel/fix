@@ -57,10 +57,10 @@ namespace grapher.DesktopSens.Models
         /// from a previously-built green-cell LUT. Anchors pin the nearest node
         /// to its previous factor with a high weight so that adding a new
         /// green cell cannot rewrite the curve at speeds the user already
-        /// verified. This is the per-point isolation guarantee described in
-        /// the LUT-fix README: previously-verified LUT points survive a
-        /// re-fit and only the unverified region of the curve is free to
-        /// move.
+        /// verified. This overload retains the historical soft-anchor
+        /// parameter for source compatibility. The production sample-fit
+        /// merger now uses the weighted overload with fixedNodeFactors,
+        /// which enforces frozen nodes exactly; it does not pass soft anchors.
         /// </summary>
         public static FitResult Fit(
             IList<DesktopSensTrial> trials,
@@ -84,7 +84,8 @@ namespace grapher.DesktopSens.Models
             bool includeYellowCells,
             IList<double> trialWeights,
             double targetScale,
-            IList<double> targetScales = null)
+            IList<double> targetScales = null,
+            IList<double> fixedNodeFactors = null)
         {
             var result = new FitResult
             {
@@ -104,11 +105,9 @@ namespace grapher.DesktopSens.Models
             if (nodeCount > DesktopSensConstants.SampleLutMaxNodes)
                 nodeCount = DesktopSensConstants.SampleLutMaxNodes;
 
-            // Pre-pass: determine the actual speed range covered by the
-            // accepted trials so the nodes span the data rather than the
-            // global default range.
-            double minSpeed = double.MaxValue;
-            double maxSpeed = double.MinValue;
+            // Fixed logarithmic node grid. Never derive node positions from
+            // the current trial set: adding a higher-speed zone must not move
+            // any previously calibrated node.
             int usableTrialCount = 0;
             for (int trialIndex = 0; trialIndex < trials.Count; trialIndex++)
             {
@@ -118,28 +117,16 @@ namespace grapher.DesktopSens.Models
                 double perTrialScale = targetScale * GetTargetScale(targetScales, trialIndex);
                 List<(double speed, double displacement)> samples =
                     ExtractProjectedSamples(trial, out _, perTrialScale);
-                if (samples.Count == 0) continue;
-                foreach (var s in samples)
-                {
-                    if (s.speed < minSpeed) minSpeed = s.speed;
-                    if (s.speed > maxSpeed) maxSpeed = s.speed;
-                }
-                usableTrialCount++;
+                if (samples.Count > 0) usableTrialCount++;
             }
-            if (usableTrialCount == 0 || !IsFinite(minSpeed) || !IsFinite(maxSpeed))
+            if (usableTrialCount == 0)
             {
                 result.FailureReason = "no usable trial samples";
                 return result;
             }
 
-            // Expand the observed range with a margin so the bookends do
-            // not sit on the very edge of the data.
-            minSpeed = Math.Max(minSpeed * 0.5, DesktopSensConstants.SampleLutMinSpeedCmPerSec);
-            maxSpeed = Math.Min(maxSpeed * 2.0, DesktopSensConstants.SampleLutMaxSpeedCmPerSec);
-            if (maxSpeed <= minSpeed * 1.1)
-                maxSpeed = minSpeed * 2.0;
-
-            // Log-spaced nodes over [minSpeed, maxSpeed].
+            double minSpeed = DesktopSensConstants.SampleLutMinSpeedCmPerSec;
+            double maxSpeed = DesktopSensConstants.SampleLutMaxSpeedCmPerSec;
             double[] nodeSpeeds = new double[nodeCount];
             double logMin = Math.Log(minSpeed);
             double logMax = Math.Log(maxSpeed);
@@ -158,33 +145,14 @@ namespace grapher.DesktopSens.Models
             double[,] normal = new double[n, n];
             double[] rhs = new double[n];
 
-            // Ridge prior toward 1.0.
-            double prior = DesktopSensConstants.SampleLutPriorWeight;
-            for (int i = 0; i < n; i++)
-            {
-                normal[i, i] += prior;
-                rhs[i] += prior * 1.0;
-            }
+            double nodeDensityScale = (double)n / DesktopSensConstants.SampleLutDefaultNodes;
+            double[] nodeSupport = new double[n];
 
-            // Smoothness penalty: λ Σ (f_{i+1} - f_i)^2
-            double smooth = DesktopSensConstants.SampleLutSmoothWeight;
-            for (int i = 0; i < n - 1; i++)
-            {
-                normal[i, i] += smooth;
-                normal[i + 1, i + 1] += smooth;
-                normal[i, i + 1] -= smooth;
-                normal[i + 1, i] -= smooth;
-            }
-
-            // NEW (Model v6, per-point isolation): anchor nodes to their
-            // previously-built factors. Each anchor is a (speed, factor)
-            // pair from a previously-verified LUT point. We pin the nearest
-            // node to that factor with a high weight so adding a new green
-            // cell cannot rewrite the curve at speeds the user already
-            // verified — only the unverified region of the curve is free
-            // to move. This implements the isolation guarantee described in
-            // README_LUT_FIX_V2.md: previously-built LUT points survive a
-            // re-fit instead of being silently overwritten.
+            // Historical optional soft-anchor compatibility path. The
+            // DesktopSensProfileMerger sample-fit path passes anchors=null
+            // and uses fixedNodeFactors below instead, so production green
+            // nodes are protected by exact constraints rather than this
+            // penalty-based approximation.
             if (anchors != null && anchors.Count > 0)
             {
                 double anchorWeight = DesktopSensConstants.SampleLutAnchorWeight;
@@ -255,6 +223,9 @@ namespace grapher.DesktopSens.Models
                 }
                 if (Math.Abs(rowSum) < 1e-9) continue;
 
+                for (int i = 0; i < n; i++)
+                    nodeSupport[i] += weight * Math.Abs(row[i]);
+
                 // Normal equations: A^T W A and A^T W b.
                 for (int i = 0; i < n; i++)
                 {
@@ -263,6 +234,55 @@ namespace grapher.DesktopSens.Models
                     for (int j = 0; j < n; j++)
                         if (Math.Abs(row[j]) >= 1e-12)
                             normal[i, j] += weight * row[i] * row[j];
+                }
+            }
+
+            // Adaptive regularization: unsupported nodes are held near neutral
+            // and smoothed across empty spans. Nodes with real observations
+            // retain lighter penalties so distinct measured speed bands survive.
+            for (int i = 0; i < n; i++)
+            {
+                bool observed = nodeSupport[i] >= DesktopSensConstants.SampleLutNodeMinimumSupportCm;
+                double prior = DesktopSensConstants.SampleLutPriorWeight *
+                    (observed ? DesktopSensConstants.SampleLutObservedNodePriorScale : 1.0) *
+                    Math.Sqrt(Math.Max(1.0, nodeDensityScale));
+                normal[i, i] += prior;
+                rhs[i] += prior;
+            }
+            for (int i = 0; i < n - 1; i++)
+            {
+                bool leftObserved = nodeSupport[i] >= DesktopSensConstants.SampleLutNodeMinimumSupportCm;
+                bool rightObserved = nodeSupport[i + 1] >= DesktopSensConstants.SampleLutNodeMinimumSupportCm;
+                // Do not let a neutral, unsupported neighbour pull a measured
+                // node away from its data. Strong smoothing is confined to
+                // wholly unsupported spans; mixed edges keep the light penalty.
+                double smooth = !leftObserved && !rightObserved
+                    ? DesktopSensConstants.SampleLutSmoothWeight * Math.Max(1.0, nodeDensityScale)
+                    : DesktopSensConstants.SampleLutObservedSmoothWeight;
+                normal[i, i] += smooth;
+                normal[i + 1, i + 1] += smooth;
+                normal[i, i + 1] -= smooth;
+                normal[i + 1, i] -= smooth;
+            }
+
+            // Exact frozen-node constraints. Eliminate frozen variables from
+            // the free-node system instead of using a large penalty weight;
+            // this guarantees the returned frozen factors are unchanged.
+            if (fixedNodeFactors != null && fixedNodeFactors.Count == n)
+            {
+                for (int fixedIndex = 0; fixedIndex < n; fixedIndex++)
+                {
+                    double fixedFactor = fixedNodeFactors[fixedIndex];
+                    if (!IsFinite(fixedFactor) || fixedFactor <= 0.0) continue;
+                    for (int freeIndex = 0; freeIndex < n; freeIndex++)
+                    {
+                        if (freeIndex == fixedIndex) continue;
+                        rhs[freeIndex] -= normal[freeIndex, fixedIndex] * fixedFactor;
+                        normal[freeIndex, fixedIndex] = 0.0;
+                        normal[fixedIndex, freeIndex] = 0.0;
+                    }
+                    normal[fixedIndex, fixedIndex] = 1.0;
+                    rhs[fixedIndex] = fixedFactor;
                 }
             }
 
@@ -285,6 +305,19 @@ namespace grapher.DesktopSens.Models
                     solution[i] = DesktopSensConstants.MinimumCalibrationFactor;
                 if (solution[i] > DesktopSensConstants.MaximumCalibrationFactor)
                     solution[i] = DesktopSensConstants.MaximumCalibrationFactor;
+            }
+
+            // Restore fixed values after the safety clamp as well. This
+            // makes frozen nodes bitwise identical to the profile snapshot,
+            // independent of pivoting, rounding, or clamp logic.
+            if (fixedNodeFactors != null && fixedNodeFactors.Count == n)
+            {
+                for (int i = 0; i < n; i++)
+                {
+                    double fixedFactor = fixedNodeFactors[i];
+                    if (IsFinite(fixedFactor) && fixedFactor > 0.0)
+                        solution[i] = fixedFactor;
+                }
             }
 
             // Compute RMSE for diagnostics.
@@ -480,26 +513,12 @@ namespace grapher.DesktopSens.Models
                 : 0.0;
             if (cmPerCount <= 0.0) return resultList;
 
-            long previousTimestamp = trial.RawSamples[0].Timestamp;
-            for (int i = 0; i < trial.RawSamples.Count; i++)
+            foreach (SampleLutCachedSample cachedSample in
+                SampleLutSampleProcessor.GetCachedSamples(trial))
             {
-                MouseSample sample = trial.RawSamples[i];
-                if (i > 0)
-                {
-                    long delta = sample.Timestamp - previousTimestamp;
-                    if (delta <= 0) continue;
-                    double dtSec = delta / (double)Stopwatch.Frequency;
-                    if (dtSec <= 0.0) continue;
-                    double dx = sample.DX;
-                    double dy = sample.DY;
-                    double projCounts = dx * axisX + dy * axisY;
-                    double displacementCm = projCounts * cmPerCount;
-                    double speedCmPerSec = Math.Abs(displacementCm) / dtSec;
-                    if (IsFinite(speedCmPerSec) && speedCmPerSec > 0.0 &&
-                        IsFinite(displacementCm) && displacementCm != 0.0)
-                        resultList.Add((speedCmPerSec, displacementCm));
-                }
-                previousTimestamp = sample.Timestamp;
+                if (cachedSample.IsUsable)
+                    resultList.Add((cachedSample.SpeedCmPerSec,
+                        cachedSample.ProjectedDisplacementCm));
             }
             return resultList;
         }

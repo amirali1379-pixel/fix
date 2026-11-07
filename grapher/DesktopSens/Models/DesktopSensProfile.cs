@@ -176,6 +176,13 @@ namespace grapher.DesktopSens.Models
         // Needed to renormalize anchors if Base Sens changes before the next fit.
         public Dictionary<int, double> LastBuiltLutBaseFactorByAngleZone = new Dictionary<int, double>();
 
+        // Exact frozen node factors for sample-fit LUTs, persisted per angle
+        // zone. zero entries are free nodes; finite positive entries are
+        // immutable until an explicit recalibration/unfreeze operation.
+        // Arrays use the fixed SampleLutFitter node grid.
+        public Dictionary<int, double[]> FrozenSampleLutNodeFactorsByAngleZone =
+            new Dictionary<int, double[]>();
+
         public RotationModel Rotation = new RotationModel();
 
         public int CellsStable = 0;

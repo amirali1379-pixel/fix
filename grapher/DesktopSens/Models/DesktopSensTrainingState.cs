@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using Newtonsoft.Json;
 
 namespace grapher.DesktopSens.Models
 {
@@ -86,6 +87,20 @@ namespace grapher.DesktopSens.Models
         /// within tolerance. Rendered as a solid green marker.
         /// </summary>
         public bool Verified;
+
+        // Model v13: old green evidence remains stored but requires review on the new LUT grid.
+        public bool NeedsReview;
+
+        // Persisted guard against a cell whose robust error worsens repeatedly.
+        // Missing fields in pre-v12 JSON deserialize to false/zero.
+        public bool IsDiverging;
+        public int DivergenceWorseningStreak;
+        public double LastDivergenceMetricCm;
+
+        // Raw pre-ASDW signed errors used only for the green/verified quality gate.
+        // Legacy profiles have no history and are safely initialized on first attempt.
+        public List<double> RawFlickErrorHistoryCm = new List<double>();
+        public double RobustRawFlickErrorCm;
 
         public DateTime LastAttemptTimestampUtc;
         public DateTime? FirstRoundCompletedTimestampUtc;
@@ -564,9 +579,11 @@ namespace grapher.DesktopSens.Models
             int zoneCount = cardinalIndex >= 0
                 ? TrainingGeometry.Current.MultiDirectionZoneCount(cardinalIndex, directionCount)
                 : TrainingGeometry.Current.DistanceZoneCount;
-            // No sequential lockout; with BaseZoneEndCm = 0.0 every zone
-            // (including micro-flick zones) is a calibration target.
-            return distanceZoneIndex < zoneCount && IsCalibrationDistanceZone(distanceZoneIndex);
+            if (distanceZoneIndex < 0 || distanceZoneIndex >= zoneCount ||
+                !IsCalibrationDistanceZone(distanceZoneIndex)) return false;
+            if (directionCount == 4 && TrainingGeometry.Current.UseMidEndPoints)
+                return IsCellAvailableForTrainingStrict(states, angleZoneIndex, distanceZoneIndex);
+            return true;
         }
 
         /// <summary>
@@ -582,9 +599,17 @@ namespace grapher.DesktopSens.Models
             int zoneCount = cardinalIndex >= 0
                 ? TrainingGeometry.Current.CardinalDirectionZoneCount(cardinalIndex)
                 : TrainingGeometry.Current.DistanceZoneCount;
-            // Remove sequential lockout; with BaseZoneEndCm = 0.0 every zone
-            // (including micro-flick zones) is a calibration target.
-            return distanceZoneIndex < zoneCount && IsCalibrationDistanceZone(distanceZoneIndex);
+            if (distanceZoneIndex < 0 || distanceZoneIndex >= zoneCount ||
+                !IsCalibrationDistanceZone(distanceZoneIndex)) return false;
+            if (TrainingGeometry.Current.UseMidEndPoints)
+            {
+                if (distanceZoneIndex == 0) return true;
+                int previousCellIndex = GetCellIndex(angleZoneIndex, distanceZoneIndex - 1);
+                return states != null && states.TryGetValue(previousCellIndex, out var previousState) &&
+                    previousState != null && previousState.Verified && previousState.PrecisionVerified &&
+                    !previousState.NeedsReview;
+            }
+            return true;
         }
 
         /// <summary>
@@ -609,6 +634,8 @@ namespace grapher.DesktopSens.Models
             int zoneCount = cardinalIndex >= 0
                 ? TrainingGeometry.Current.CardinalDirectionZoneCount(cardinalIndex)
                 : TrainingGeometry.Current.DistanceZoneCount;
+            if (TrainingGeometry.Current.UseMidEndPoints)
+                return IsCellAvailableForTrainingStrict(states, angleZoneIndex, distanceZoneIndex);
             // The allowOverride flag is retained for API compatibility.
             return distanceZoneIndex < zoneCount && IsCalibrationDistanceZone(distanceZoneIndex);
         }
@@ -656,7 +683,8 @@ namespace grapher.DesktopSens.Models
             double angularErrorDegrees = 0.0,
             double targetDistanceCm = 0.0,
             bool sessionBiasApplied = false,
-            double sessionBiasLogGain = 0.0)
+            double sessionBiasLogGain = 0.0,
+            double rawFlickErrorCm = double.NaN)
         {
             if (states == null) return;
             if (double.IsNaN(signedErrorCm) || double.IsInfinity(signedErrorCm))
@@ -749,6 +777,29 @@ namespace grapher.DesktopSens.Models
             // the median of the last K samples; RobustSigmaCm is
             // 1.4826 * MAD.
             UpdateRobustStatistics(state);
+
+            if (!IsFinite(rawFlickErrorCm))
+                rawFlickErrorCm = signedErrorCm; // backward-compatible direct callers
+            if (state.RawFlickErrorHistoryCm == null)
+                state.RawFlickErrorHistoryCm = new List<double>();
+            state.RawFlickErrorHistoryCm.Add(rawFlickErrorCm);
+            while (state.RawFlickErrorHistoryCm.Count > TrainingCellState.MaxStoredHistorySamples)
+                state.RawFlickErrorHistoryCm.RemoveAt(0);
+            state.RobustRawFlickErrorCm = RobustStatistics.Median(state.RawFlickErrorHistoryCm);
+
+            UpdateDivergenceTrend(state);
+            if (state.IsDiverging)
+            {
+                state.Verified = false;
+                state.PrecisionVerified = false;
+                state.VerifiedSessionId = null;
+                state.VerifiedTimestampUtc = null;
+                DesktopSensLog.Warn("Training cell marked diverging: angleZone=" +
+                    angleZoneIndex + " distanceZone=" + distanceZoneIndex +
+                    " robustErrorCm=" + state.RobustSignedErrorCm.ToString("+0.000;-0.000;0.000") +
+                    " worseningStreak=" + state.DivergenceWorseningStreak);
+                return;
+            }
 
             // With BaseZoneEndCm = 0.0, isBaseDimension is always false
             // (every zone center is > 0), so the gain is always estimated
@@ -910,14 +961,29 @@ namespace grapher.DesktopSens.Models
 
             // Verification: a successful attempt AFTER the first-round was
             // completed → green.
+            bool rawFlickWithinGreenTolerance =
+                state.RawFlickErrorHistoryCm != null &&
+                state.RawFlickErrorHistoryCm.Count >= VerificationExtraSuccessfulAttempts &&
+                Math.Abs(state.RobustRawFlickErrorCm) <=
+                    DesktopSensConstants.TrainingGreenRawFlickToleranceCm;
+
+            if (state.Verified && !rawFlickWithinGreenTolerance)
+            {
+                state.Verified = false;
+                state.VerifiedSessionId = null;
+                state.VerifiedTimestampUtc = null;
+            }
+
             if (state.FirstRoundComplete &&
                 !state.Verified &&
                 state.PrecisionVerified &&
                 !state.SessionRepeatabilityFailed &&
+                rawFlickWithinGreenTolerance &&
                 state.SuccessfulAttemptCount >=
                     MinSuccessfulAttemptsForFirstRound + VerificationExtraSuccessfulAttempts)
             {
                 state.Verified = true;
+                state.NeedsReview = false;
                 state.VerifiedTimestampUtc = timestampUtc;
                 state.VerifiedSessionId = sessionId;
                 state.DriftDetected = false;
@@ -1222,6 +1288,27 @@ namespace grapher.DesktopSens.Models
             }
             state.RobustSignedErrorCm = RobustStatistics.Median(state.SignedErrorHistoryCm);
             state.RobustSigmaCm = RobustStatistics.RobustSigma(state.SignedErrorHistoryCm);
+        }
+
+        private static void UpdateDivergenceTrend(TrainingCellState state)
+        {
+            if (state == null || state.IsDiverging) return;
+            double metric = Math.Abs(state.RobustSignedErrorCm);
+            if (!IsFinite(metric) || metric < DesktopSensConstants.DivergenceMinimumRobustErrorCm)
+            {
+                state.DivergenceWorseningStreak = 0;
+                state.LastDivergenceMetricCm = IsFinite(metric) ? metric : 0.0;
+                return;
+            }
+            double previous = state.LastDivergenceMetricCm;
+            if (previous >= DesktopSensConstants.DivergenceMinimumRobustErrorCm &&
+                metric > previous * (1.0 + DesktopSensConstants.DivergenceMinimumRelativeWorsening))
+                state.DivergenceWorseningStreak++;
+            else
+                state.DivergenceWorseningStreak = 0;
+            state.LastDivergenceMetricCm = metric;
+            if (state.DivergenceWorseningStreak >= DesktopSensConstants.DivergenceWorseningStreakLimit)
+                state.IsDiverging = true;
         }
 
         /// <summary>
@@ -1626,6 +1713,53 @@ namespace grapher.DesktopSens.Models
         }
 
         /// <summary>
+        /// Profile-aware cell reset. Reopening an older cell releases that
+        /// cell's frozen LUT ownership and all downstream node constraints.
+        /// </summary>
+        public static bool ResetCell(
+            DesktopSensProfile profile,
+            int angleZoneIndex,
+            int distanceZoneIndex)
+        {
+            if (profile == null) return false;
+            int distanceCount = TrainingGeometry.Current.DistanceZoneCount;
+            bool removed = ResetCell(profile.CellTrainingStates, angleZoneIndex, distanceZoneIndex);
+
+            // Delete only the selected cell's trials. Later observations remain
+            // available for audit, but their verification is revoked because the
+            // upstream LUT boundary they depended on has changed.
+            if (profile.Trials != null)
+                profile.Trials.RemoveAll(trial => trial != null &&
+                    trial.AngleZoneIndex == angleZoneIndex &&
+                    trial.DistanceZoneIndex == distanceZoneIndex);
+
+            int affectedGreen = 0;
+            if (profile.CellTrainingStates != null)
+            {
+                for (int distance = distanceZoneIndex + 1; distance < distanceCount; distance++)
+                {
+                    int laterIndex = GetCellIndex(angleZoneIndex, distance);
+                    if (!profile.CellTrainingStates.TryGetValue(laterIndex, out var laterState) ||
+                        laterState == null || (!laterState.Verified && !laterState.PrecisionVerified))
+                        continue;
+                    laterState.Verified = false;
+                    laterState.PrecisionVerified = false;
+                    laterState.NeedsReview = true;
+                    laterState.VerifiedSessionId = null;
+                    laterState.VerifiedTimestampUtc = null;
+                    affectedGreen++;
+                }
+            }
+
+            DesktopSensProfileMerger.UnfreezeSampleLutFromCell(
+                profile, angleZoneIndex, distanceZoneIndex);
+            CalibrationResidualCache.Clear(profile);
+            DesktopSensLog.Warn("Profile-aware cell reset: angleZone=" + angleZoneIndex +
+                " distanceZone=" + distanceZoneIndex + " laterGreenNeedsReview=" + affectedGreen);
+            return removed;
+        }
+
+        /// <summary>
         /// Returns the next distance-zone index that is available for
         /// training on the given cardinal axis, or -1 if every cell on
         /// that axis is Verified.
@@ -1721,5 +1855,162 @@ namespace grapher.DesktopSens.Models
             }
             return -1;
         }
+    }
+
+        /// <summary>
+        /// Bounded undo image for one training attempt. It deliberately excludes
+        /// the trial history: the attempt is appended at the end, so a count is
+        /// sufficient to remove it. Cell histories are bounded by the training
+        /// state model and are the only JSON payload captured here.
+        /// </summary>
+    internal sealed class DesktopSensTrainingUndoSnapshot
+        {
+        private int _trialCount;
+        private string _cellTrainingStatesJson;
+        private double[] _sensitivityFactor, _sensitivityConfidence;
+        private double[] _accelerationFactor, _accelerationConfidence;
+        private double[] _cellSensitivityFactor, _cellSensitivityConfidence;
+        private double[] _cellAccelerationFactor, _cellAccelerationConfidence;
+        private double[] _cellRotationOffsetDegrees, _cellRotationConfidence;
+        private int[] _cellCurveMode, _cellCurveSampleCount;
+        private double[] _cellCurveParameters, _cellCurveRmse, _cellCurveAic;
+        private Dictionary<int, double[]> _frozenNodes;
+        private Dictionary<int, List<LutPoint>> _lastBuiltPoints;
+        private Dictionary<int, double> _lastBuiltBaseFactors;
+        private int _cellsStable, _cellsLowConfidence, _cellsInsufficientData, _modelVersion;
+        private double _overallCoverage, _overallConfidence;
+        private DateTime _modifiedTimestamp;
+        private bool _allCardinalCellsVerified;
+        private DateTime? _lastMergeAppliedTimestampUtc;
+        private MergedCardinalProfile _lastAppliedMergedProfile, _previousAppliedMergedProfile;
+        private string _lastBackupPath;
+        private DateTime? _lastBackupAtUtc;
+        private int[] _angleCounts, _distanceCounts;
+
+        private static T[] Copy<T>(T[] source)
+            {
+                return source == null ? null : (T[])source.Clone();
+            }
+
+        private static Dictionary<int, double[]> CopyNodeMap(Dictionary<int, double[]> source)
+            {
+                var result = new Dictionary<int, double[]>();
+                if (source != null)
+                    foreach (var pair in source)
+                        result[pair.Key] = Copy(pair.Value);
+                return result;
+            }
+
+        private static Dictionary<int, List<LutPoint>> CopyPointMap(
+                Dictionary<int, List<LutPoint>> source)
+            {
+                var result = new Dictionary<int, List<LutPoint>>();
+                if (source != null)
+                    foreach (var pair in source)
+                        result[pair.Key] = pair.Value == null ? null : new List<LutPoint>(pair.Value);
+                return result;
+            }
+
+        internal static DesktopSensTrainingUndoSnapshot Capture(
+                DesktopSensProfile profile, int[] angleCounts, int[] distanceCounts)
+            {
+                if (profile == null) throw new ArgumentNullException(nameof(profile));
+                return new DesktopSensTrainingUndoSnapshot
+                {
+                    _trialCount = profile.Trials != null ? profile.Trials.Count : 0,
+                    _cellTrainingStatesJson = JsonConvert.SerializeObject(
+                        profile.CellTrainingStates ?? new Dictionary<int, TrainingCellState>()),
+                    _sensitivityFactor = Copy(profile.SensitivityFactor),
+                    _sensitivityConfidence = Copy(profile.SensitivityConfidence),
+                    _accelerationFactor = Copy(profile.AccelerationFactor),
+                    _accelerationConfidence = Copy(profile.AccelerationConfidence),
+                    _cellSensitivityFactor = Copy(profile.CellSensitivityFactor),
+                    _cellSensitivityConfidence = Copy(profile.CellSensitivityConfidence),
+                    _cellAccelerationFactor = Copy(profile.CellAccelerationFactor),
+                    _cellAccelerationConfidence = Copy(profile.CellAccelerationConfidence),
+                    _cellRotationOffsetDegrees = Copy(profile.CellRotationOffsetDegrees),
+                    _cellRotationConfidence = Copy(profile.CellRotationConfidence),
+                    _cellCurveMode = Copy(profile.CellCurveMode),
+                    _cellCurveParameters = Copy(profile.CellCurveParameters),
+                    _cellCurveRmse = Copy(profile.CellCurveRmse),
+                    _cellCurveAic = Copy(profile.CellCurveAic),
+                    _cellCurveSampleCount = Copy(profile.CellCurveSampleCount),
+                    _frozenNodes = CopyNodeMap(profile.FrozenSampleLutNodeFactorsByAngleZone),
+                    _lastBuiltPoints = CopyPointMap(profile.LastBuiltLutPointsByAngleZone),
+                    _lastBuiltBaseFactors = profile.LastBuiltLutBaseFactorByAngleZone == null
+                        ? new Dictionary<int, double>()
+                        : new Dictionary<int, double>(profile.LastBuiltLutBaseFactorByAngleZone),
+                    _cellsStable = profile.CellsStable,
+                    _cellsLowConfidence = profile.CellsLowConfidence,
+                    _cellsInsufficientData = profile.CellsInsufficientData,
+                    _overallCoverage = profile.OverallCoverage,
+                    _overallConfidence = profile.OverallConfidence,
+                    _modelVersion = profile.ModelVersion,
+                    _modifiedTimestamp = profile.ModifiedTimestamp,
+                    _allCardinalCellsVerified = profile.AllCardinalCellsVerified,
+                    _lastMergeAppliedTimestampUtc = profile.LastMergeAppliedTimestampUtc,
+                    _lastAppliedMergedProfile = profile.LastAppliedMergedProfile,
+                    _previousAppliedMergedProfile = profile.PreviousAppliedMergedProfile,
+                    _lastBackupPath = profile.LastBackupPath,
+                    _lastBackupAtUtc = profile.LastBackupAtUtc,
+                    _angleCounts = Copy(angleCounts),
+                    _distanceCounts = Copy(distanceCounts)
+                };
+            }
+
+        internal void Restore(
+                DesktopSensProfile profile, int[] angleCounts, int[] distanceCounts)
+            {
+                if (profile == null) throw new ArgumentNullException(nameof(profile));
+                // Deserialize the bounded cell-state payload before mutating the
+                // live profile, so a corrupt snapshot cannot leave a half-restore.
+                Dictionary<int, TrainingCellState> restoredStates =
+                    JsonConvert.DeserializeObject<Dictionary<int, TrainingCellState>>(
+                        _cellTrainingStatesJson) ?? new Dictionary<int, TrainingCellState>();
+                if (profile.Trials == null)
+                    profile.Trials = new List<DesktopSensTrial>();
+                if (profile.Trials.Count < _trialCount)
+                    throw new InvalidOperationException("Training trial history changed before Undo.");
+                if (profile.Trials.Count > _trialCount)
+                    profile.Trials.RemoveRange(_trialCount, profile.Trials.Count - _trialCount);
+
+                profile.CellTrainingStates = restoredStates;
+                profile.SensitivityFactor = Copy(_sensitivityFactor);
+                profile.SensitivityConfidence = Copy(_sensitivityConfidence);
+                profile.AccelerationFactor = Copy(_accelerationFactor);
+                profile.AccelerationConfidence = Copy(_accelerationConfidence);
+                profile.CellSensitivityFactor = Copy(_cellSensitivityFactor);
+                profile.CellSensitivityConfidence = Copy(_cellSensitivityConfidence);
+                profile.CellAccelerationFactor = Copy(_cellAccelerationFactor);
+                profile.CellAccelerationConfidence = Copy(_cellAccelerationConfidence);
+                profile.CellRotationOffsetDegrees = Copy(_cellRotationOffsetDegrees);
+                profile.CellRotationConfidence = Copy(_cellRotationConfidence);
+                profile.CellCurveMode = Copy(_cellCurveMode);
+                profile.CellCurveParameters = Copy(_cellCurveParameters);
+                profile.CellCurveRmse = Copy(_cellCurveRmse);
+                profile.CellCurveAic = Copy(_cellCurveAic);
+                profile.CellCurveSampleCount = Copy(_cellCurveSampleCount);
+                profile.FrozenSampleLutNodeFactorsByAngleZone = CopyNodeMap(_frozenNodes);
+                profile.LastBuiltLutPointsByAngleZone = CopyPointMap(_lastBuiltPoints);
+                profile.LastBuiltLutBaseFactorByAngleZone =
+                    new Dictionary<int, double>(_lastBuiltBaseFactors);
+                profile.CellsStable = _cellsStable;
+                profile.CellsLowConfidence = _cellsLowConfidence;
+                profile.CellsInsufficientData = _cellsInsufficientData;
+                profile.OverallCoverage = _overallCoverage;
+                profile.OverallConfidence = _overallConfidence;
+                profile.ModelVersion = _modelVersion;
+                profile.ModifiedTimestamp = _modifiedTimestamp;
+                profile.AllCardinalCellsVerified = _allCardinalCellsVerified;
+                profile.LastMergeAppliedTimestampUtc = _lastMergeAppliedTimestampUtc;
+                profile.LastAppliedMergedProfile = _lastAppliedMergedProfile;
+                profile.PreviousAppliedMergedProfile = _previousAppliedMergedProfile;
+                profile.LastBackupPath = _lastBackupPath;
+                profile.LastBackupAtUtc = _lastBackupAtUtc;
+                if (angleCounts != null && _angleCounts != null)
+                    Array.Copy(_angleCounts, angleCounts, Math.Min(_angleCounts.Length, angleCounts.Length));
+                if (distanceCounts != null && _distanceCounts != null)
+                    Array.Copy(_distanceCounts, distanceCounts, Math.Min(_distanceCounts.Length, distanceCounts.Length));
+            }
     }
 }

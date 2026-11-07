@@ -25,6 +25,12 @@ namespace grapher.DesktopSens.Models
         public const string NoiseFloorExceeded = "noise_floor_exceeded";
         public const string SensorGlitch = "sensor_glitch";
         public const string CardinalAxisMismatch = "cardinal_axis_mismatch";
+        public const string OvershootOutOfRange = "overshoot_out_of_range";
+        public const string DidNotEnterZone = "did_not_enter_zone";
+        public const string LongPause = "long_pause";
+        public const string PeakVelocityTooLow = "peak_velocity_too_low";
+        public const string CellDiverging = "cell_diverging";
+        public const string NoFreeLutNodes = "no_free_lut_nodes";
     }
 
     public class DesktopSensTrial
@@ -129,6 +135,9 @@ namespace grapher.DesktopSens.Models
         public double AppliedBaseFactor = 1.0;
         public double AppliedLutFactor = 1.0;
         public bool HasAppliedLutFactor;
+        // Per-raw-sample LUT factor snapshot, index-aligned with RawSamples.
+        // Empty on legacy trials; those continue to use AppliedLutFactor.
+        public List<double> AppliedLutFactorsByRawSample = new List<double>();
 
         public double DurationMs;
         public double PeakVelocityPxPerSec;
