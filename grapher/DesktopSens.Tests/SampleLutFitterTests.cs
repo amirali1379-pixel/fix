@@ -702,6 +702,35 @@ namespace grapher.DesktopSens.Tests
             return values[values.Count - 1].speed;
         }
 
+        [Fact]
+        public void FreezeBoundary_IgnoresSubMillisecondVelocitySpikes()
+        {
+            var profile = CreateGreenSampleFitProfile();
+            var trial = MakeSyntheticTrial(speedCountsPerSec: 1.0,
+                targetCm: 5.0, neededCm: 5.0, flickCm: 5.0);
+            trial.AngleZoneIndex = 0;
+            trial.DistanceZoneIndex = 0;
+
+            // Keep the ordinary ~5 cm/s intervals, then simulate timestamp
+            // batching at the tail: large deltas recorded in 0.1 ms intervals.
+            long spikeTicks = Math.Max(1L, (long)(Stopwatch.Frequency * 0.0001));
+            int n = trial.RawSamples.Count;
+            trial.RawSamples[n - 2].Timestamp =
+                trial.RawSamples[n - 3].Timestamp + spikeTicks;
+            trial.RawSamples[n - 1].Timestamp =
+                trial.RawSamples[n - 2].Timestamp + spikeTicks;
+            profile.Trials.Add(trial);
+
+            BuildSampleFitLut(profile);
+            double[] frozen = profile.FrozenSampleLutNodeFactorsByAngleZone[0];
+            int frozenCount = frozen.Count(value => value > 0.0);
+            Assert.True(frozenCount > 0, "The green cell should freeze its low-speed range.");
+            Assert.True(frozenCount < frozen.Length,
+                "Sub-ms timestamp spikes must not freeze the entire fixed LUT node grid.");
+            Assert.True(frozen.Any(value => value == 0.0),
+                "Higher-speed nodes must remain free for downstream cells.");
+        }
+
         private static DesktopSensTrial MakeSyntheticTrial(
             double speedCountsPerSec, double targetCm, double neededCm, double flickCm)
         {
