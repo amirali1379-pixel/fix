@@ -1541,10 +1541,16 @@ namespace grapher.DesktopSens.Views
             }
             else
             {
-                // Capture the entire persisted profile before this trial is
-                // appended. Ctrl+Z restores this exact snapshot, including LUT
-                // frozen nodes, cell counters/history, caches and factor arrays.
-                _lastTrialUndoSnapshotJson = JsonConvert.SerializeObject(_profile);
+                // Capture only bounded calibration state. Trial history is never
+                // serialized; Undo removes the appended tail trial by count.
+                var undoCaptureTimer = System.Diagnostics.Stopwatch.StartNew();
+                _lastTrialUndoSnapshot = TrainingUndoSnapshot.Capture(
+                    _profile, _angleZoneCounts, _distanceZoneCounts);
+                undoCaptureTimer.Stop();
+                DesktopSensLog.Info(
+                    "Training undo snapshot captured: trials=" + _profile.Trials.Count +
+                    " cells=" + (_profile.CellTrainingStates != null ? _profile.CellTrainingStates.Count : 0) +
+                    " elapsedMs=" + undoCaptureTimer.Elapsed.TotalMilliseconds.ToString("0.000"));
                 _profile.Trials.Add(trial);
             }
             // Clear the completed trial's marker before the A/B callback can
