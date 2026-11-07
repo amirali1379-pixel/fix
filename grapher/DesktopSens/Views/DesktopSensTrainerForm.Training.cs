@@ -771,7 +771,6 @@ namespace grapher.DesktopSens.Views
             private double[] _cellRotationOffsetDegrees, _cellRotationConfidence;
             private int[] _cellCurveMode, _cellCurveSampleCount;
             private double[] _cellCurveParameters, _cellCurveRmse, _cellCurveAic;
-            private double[] _frozenNodesRight, _frozenNodesDown, _frozenNodesLeft, _frozenNodesUp;
             private Dictionary<int, double[]> _frozenNodes;
             private Dictionary<int, List<LutPoint>> _lastBuiltPoints;
             private Dictionary<int, double> _lastBuiltBaseFactors;
@@ -780,7 +779,7 @@ namespace grapher.DesktopSens.Views
             private DateTime _modifiedTimestamp;
             private bool _allCardinalCellsVerified;
             private DateTime? _lastMergeAppliedTimestampUtc;
-            private object _lastAppliedMergedProfile, _previousAppliedMergedProfile;
+            private MergedCardinalProfile _lastAppliedMergedProfile, _previousAppliedMergedProfile;
             private string _lastBackupPath;
             private DateTime? _lastBackupAtUtc;
             private int[] _angleCounts, _distanceCounts;
