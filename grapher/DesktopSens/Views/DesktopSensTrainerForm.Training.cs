@@ -2222,10 +2222,32 @@ namespace grapher.DesktopSens.Views
             object activeProfile = null;
             try { activeProfile = _activeProfileProvider != null ? _activeProfileProvider() : null; }
             catch (Exception ex) { DesktopSensLog.Warn("Could not read active RawAccel profile for smoothing diagnostics", ex); }
-            DesktopSensLog.Info("RawAccel smoothing on Apply: input_speed_smooth_halflife=" +
-                ReadProfileDiagnosticValue(activeProfile, "input_speed_smooth_halflife") +
-                " scale_smooth_halflife=" + ReadProfileDiagnosticValue(activeProfile, "scale_smooth_halflife") +
-                " output_speed_smooth_halflife=" + ReadProfileDiagnosticValue(activeProfile, "output_speed_smooth_halflife"));
+            object argsX = ReadProfileMember(activeProfile, "argsX");
+            object argsY = ReadProfileMember(activeProfile, "argsY");
+            DesktopSensLog.Info("RawAccel smoothing on Apply: " +
+                "X(input_speed_smooth_halflife=" + ReadProfileDiagnosticValue(argsX, "input_speed_smooth_halflife") +
+                ", scale_smooth_halflife=" + ReadProfileDiagnosticValue(argsX, "scale_smooth_halflife") +
+                ", output_speed_smooth_halflife=" + ReadProfileDiagnosticValue(argsX, "output_speed_smooth_halflife") + ") " +
+                "Y(input_speed_smooth_halflife=" + ReadProfileDiagnosticValue(argsY, "input_speed_smooth_halflife") +
+                ", scale_smooth_halflife=" + ReadProfileDiagnosticValue(argsY, "scale_smooth_halflife") +
+                ", output_speed_smooth_halflife=" + ReadProfileDiagnosticValue(argsY, "output_speed_smooth_halflife") + ")");
+        }
+
+        private static object ReadProfileMember(object profile, string name)
+        {
+            if (profile == null) return null;
+            try
+            {
+                var type = profile.GetType();
+                var field = type.GetField(name, System.Reflection.BindingFlags.Instance |
+                    System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic);
+                if (field != null) return field.GetValue(profile);
+                var property = type.GetProperty(name, System.Reflection.BindingFlags.Instance |
+                    System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic);
+                if (property != null) return property.GetValue(profile, null);
+            }
+            catch { }
+            return null;
         }
 
         private static string ReadProfileDiagnosticValue(object profile, string name)
