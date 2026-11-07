@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using Newtonsoft.Json;
 
 namespace grapher.DesktopSens.Models
 {
@@ -1854,5 +1855,162 @@ namespace grapher.DesktopSens.Models
             }
             return -1;
         }
+    }
+
+        /// <summary>
+        /// Bounded undo image for one training attempt. It deliberately excludes
+        /// the trial history: the attempt is appended at the end, so a count is
+        /// sufficient to remove it. Cell histories are bounded by the training
+        /// state model and are the only JSON payload captured here.
+        /// </summary>
+    internal sealed class DesktopSensTrainingUndoSnapshot
+        {
+        private int _trialCount;
+        private string _cellTrainingStatesJson;
+        private double[] _sensitivityFactor, _sensitivityConfidence;
+        private double[] _accelerationFactor, _accelerationConfidence;
+        private double[] _cellSensitivityFactor, _cellSensitivityConfidence;
+        private double[] _cellAccelerationFactor, _cellAccelerationConfidence;
+        private double[] _cellRotationOffsetDegrees, _cellRotationConfidence;
+        private int[] _cellCurveMode, _cellCurveSampleCount;
+        private double[] _cellCurveParameters, _cellCurveRmse, _cellCurveAic;
+        private Dictionary<int, double[]> _frozenNodes;
+        private Dictionary<int, List<LutPoint>> _lastBuiltPoints;
+        private Dictionary<int, double> _lastBuiltBaseFactors;
+        private int _cellsStable, _cellsLowConfidence, _cellsInsufficientData, _modelVersion;
+        private double _overallCoverage, _overallConfidence;
+        private DateTime _modifiedTimestamp;
+        private bool _allCardinalCellsVerified;
+        private DateTime? _lastMergeAppliedTimestampUtc;
+        private MergedCardinalProfile _lastAppliedMergedProfile, _previousAppliedMergedProfile;
+        private string _lastBackupPath;
+        private DateTime? _lastBackupAtUtc;
+        private int[] _angleCounts, _distanceCounts;
+
+        private static T[] Copy<T>(T[] source)
+            {
+                return source == null ? null : (T[])source.Clone();
+            }
+
+        private static Dictionary<int, double[]> CopyNodeMap(Dictionary<int, double[]> source)
+            {
+                var result = new Dictionary<int, double[]>();
+                if (source != null)
+                    foreach (var pair in source)
+                        result[pair.Key] = Copy(pair.Value);
+                return result;
+            }
+
+        private static Dictionary<int, List<LutPoint>> CopyPointMap(
+                Dictionary<int, List<LutPoint>> source)
+            {
+                var result = new Dictionary<int, List<LutPoint>>();
+                if (source != null)
+                    foreach (var pair in source)
+                        result[pair.Key] = pair.Value == null ? null : new List<LutPoint>(pair.Value);
+                return result;
+            }
+
+        internal static TrainingUndoSnapshot Capture(
+                DesktopSensProfile profile, int[] angleCounts, int[] distanceCounts)
+            {
+                if (profile == null) throw new ArgumentNullException(nameof(profile));
+                return new TrainingUndoSnapshot
+                {
+                    _trialCount = profile.Trials != null ? profile.Trials.Count : 0,
+                    _cellTrainingStatesJson = JsonConvert.SerializeObject(
+                        profile.CellTrainingStates ?? new Dictionary<int, TrainingCellState>()),
+                    _sensitivityFactor = Copy(profile.SensitivityFactor),
+                    _sensitivityConfidence = Copy(profile.SensitivityConfidence),
+                    _accelerationFactor = Copy(profile.AccelerationFactor),
+                    _accelerationConfidence = Copy(profile.AccelerationConfidence),
+                    _cellSensitivityFactor = Copy(profile.CellSensitivityFactor),
+                    _cellSensitivityConfidence = Copy(profile.CellSensitivityConfidence),
+                    _cellAccelerationFactor = Copy(profile.CellAccelerationFactor),
+                    _cellAccelerationConfidence = Copy(profile.CellAccelerationConfidence),
+                    _cellRotationOffsetDegrees = Copy(profile.CellRotationOffsetDegrees),
+                    _cellRotationConfidence = Copy(profile.CellRotationConfidence),
+                    _cellCurveMode = Copy(profile.CellCurveMode),
+                    _cellCurveParameters = Copy(profile.CellCurveParameters),
+                    _cellCurveRmse = Copy(profile.CellCurveRmse),
+                    _cellCurveAic = Copy(profile.CellCurveAic),
+                    _cellCurveSampleCount = Copy(profile.CellCurveSampleCount),
+                    _frozenNodes = CopyNodeMap(profile.FrozenSampleLutNodeFactorsByAngleZone),
+                    _lastBuiltPoints = CopyPointMap(profile.LastBuiltLutPointsByAngleZone),
+                    _lastBuiltBaseFactors = profile.LastBuiltLutBaseFactorByAngleZone == null
+                        ? new Dictionary<int, double>()
+                        : new Dictionary<int, double>(profile.LastBuiltLutBaseFactorByAngleZone),
+                    _cellsStable = profile.CellsStable,
+                    _cellsLowConfidence = profile.CellsLowConfidence,
+                    _cellsInsufficientData = profile.CellsInsufficientData,
+                    _overallCoverage = profile.OverallCoverage,
+                    _overallConfidence = profile.OverallConfidence,
+                    _modelVersion = profile.ModelVersion,
+                    _modifiedTimestamp = profile.ModifiedTimestamp,
+                    _allCardinalCellsVerified = profile.AllCardinalCellsVerified,
+                    _lastMergeAppliedTimestampUtc = profile.LastMergeAppliedTimestampUtc,
+                    _lastAppliedMergedProfile = profile.LastAppliedMergedProfile,
+                    _previousAppliedMergedProfile = profile.PreviousAppliedMergedProfile,
+                    _lastBackupPath = profile.LastBackupPath,
+                    _lastBackupAtUtc = profile.LastBackupAtUtc,
+                    _angleCounts = Copy(angleCounts),
+                    _distanceCounts = Copy(distanceCounts)
+                };
+            }
+
+        internal void Restore(
+                DesktopSensProfile profile, int[] angleCounts, int[] distanceCounts)
+            {
+                if (profile == null) throw new ArgumentNullException(nameof(profile));
+                // Deserialize the bounded cell-state payload before mutating the
+                // live profile, so a corrupt snapshot cannot leave a half-restore.
+                Dictionary<int, TrainingCellState> restoredStates =
+                    JsonConvert.DeserializeObject<Dictionary<int, TrainingCellState>>(
+                        _cellTrainingStatesJson) ?? new Dictionary<int, TrainingCellState>();
+                if (profile.Trials == null)
+                    profile.Trials = new List<DesktopSensTrial>();
+                if (profile.Trials.Count < _trialCount)
+                    throw new InvalidOperationException("Training trial history changed before Undo.");
+                if (profile.Trials.Count > _trialCount)
+                    profile.Trials.RemoveRange(_trialCount, profile.Trials.Count - _trialCount);
+
+                profile.CellTrainingStates = restoredStates;
+                profile.SensitivityFactor = Copy(_sensitivityFactor);
+                profile.SensitivityConfidence = Copy(_sensitivityConfidence);
+                profile.AccelerationFactor = Copy(_accelerationFactor);
+                profile.AccelerationConfidence = Copy(_accelerationConfidence);
+                profile.CellSensitivityFactor = Copy(_cellSensitivityFactor);
+                profile.CellSensitivityConfidence = Copy(_cellSensitivityConfidence);
+                profile.CellAccelerationFactor = Copy(_cellAccelerationFactor);
+                profile.CellAccelerationConfidence = Copy(_cellAccelerationConfidence);
+                profile.CellRotationOffsetDegrees = Copy(_cellRotationOffsetDegrees);
+                profile.CellRotationConfidence = Copy(_cellRotationConfidence);
+                profile.CellCurveMode = Copy(_cellCurveMode);
+                profile.CellCurveParameters = Copy(_cellCurveParameters);
+                profile.CellCurveRmse = Copy(_cellCurveRmse);
+                profile.CellCurveAic = Copy(_cellCurveAic);
+                profile.CellCurveSampleCount = Copy(_cellCurveSampleCount);
+                profile.FrozenSampleLutNodeFactorsByAngleZone = CopyNodeMap(_frozenNodes);
+                profile.LastBuiltLutPointsByAngleZone = CopyPointMap(_lastBuiltPoints);
+                profile.LastBuiltLutBaseFactorByAngleZone =
+                    new Dictionary<int, double>(_lastBuiltBaseFactors);
+                profile.CellsStable = _cellsStable;
+                profile.CellsLowConfidence = _cellsLowConfidence;
+                profile.CellsInsufficientData = _cellsInsufficientData;
+                profile.OverallCoverage = _overallCoverage;
+                profile.OverallConfidence = _overallConfidence;
+                profile.ModelVersion = _modelVersion;
+                profile.ModifiedTimestamp = _modifiedTimestamp;
+                profile.AllCardinalCellsVerified = _allCardinalCellsVerified;
+                profile.LastMergeAppliedTimestampUtc = _lastMergeAppliedTimestampUtc;
+                profile.LastAppliedMergedProfile = _lastAppliedMergedProfile;
+                profile.PreviousAppliedMergedProfile = _previousAppliedMergedProfile;
+                profile.LastBackupPath = _lastBackupPath;
+                profile.LastBackupAtUtc = _lastBackupAtUtc;
+                if (angleCounts != null && _angleCounts != null)
+                    Array.Copy(_angleCounts, angleCounts, Math.Min(_angleCounts.Length, angleCounts.Length));
+                if (distanceCounts != null && _distanceCounts != null)
+                    Array.Copy(_distanceCounts, distanceCounts, Math.Min(_distanceCounts.Length, distanceCounts.Length));
+            }
     }
 }
