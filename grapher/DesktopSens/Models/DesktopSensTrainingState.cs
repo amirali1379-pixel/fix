@@ -87,6 +87,9 @@ namespace grapher.DesktopSens.Models
         /// </summary>
         public bool Verified;
 
+        // Model v13: old green evidence remains stored but requires review on the new LUT grid.
+        public bool NeedsReview;
+
         // Persisted guard against a cell whose robust error worsens repeatedly.
         // Missing fields in pre-v12 JSON deserialize to false/zero.
         public bool IsDiverging;

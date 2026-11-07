@@ -852,7 +852,7 @@ namespace grapher.DesktopSens.Models
                 int cellIndex = DesktopSensProfile.GetCellIndex(angleZone, trial.DistanceZoneIndex);
                 if (profile.CellTrainingStates == null ||
                     !profile.CellTrainingStates.TryGetValue(cellIndex, out var state) ||
-                    state == null || state.IsDiverging) continue;
+                    state == null || state.IsDiverging || state.NeedsReview) continue;
 
                 bool isGreen = state.Verified && state.PrecisionVerified;
                 bool isYellow = !isGreen && state.AcceptedAttemptCount > 0;
@@ -896,6 +896,7 @@ namespace grapher.DesktopSens.Models
             // samples and base-factor normalization (targetScales), so session
             // bias is not a fit input. Even if residuals are rebuilt for a new
             // session, frozen node factors remain exact solver constraints.
+            var sampleFitTimer = Stopwatch.StartNew();
             SampleLutFitter.FitResult fit = SampleLutFitter.Fit(
                 eligible,
                 null,
@@ -905,6 +906,11 @@ namespace grapher.DesktopSens.Models
                 targetScale: 1.0,
                 targetScales: targetScales,
                 fixedNodeFactors: frozenNodes);
+            sampleFitTimer.Stop();
+            DesktopSensLog.Info("SampleLut fit stopwatch: angleZone=" + angleZone +
+                " trials=" + eligible.Count +
+                " nodes=" + DesktopSensConstants.SampleLutDefaultNodes +
+                " elapsedMs=" + sampleFitTimer.Elapsed.TotalMilliseconds.ToString("0.00"));
             if (fit == null || !fit.IsValid)
             {
                 DesktopSensLog.Warn(

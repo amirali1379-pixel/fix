@@ -146,7 +146,8 @@ namespace grapher.DesktopSens.Models
             double[] rhs = new double[n];
 
             // Ridge prior toward 1.0.
-            double prior = DesktopSensConstants.SampleLutPriorWeight;
+            double nodeDensityScale = (double)n / DesktopSensConstants.SampleLutDefaultNodes;
+            double prior = DesktopSensConstants.SampleLutPriorWeight * Math.Sqrt(Math.Max(1.0, nodeDensityScale));
             for (int i = 0; i < n; i++)
             {
                 normal[i, i] += prior;
@@ -154,7 +155,7 @@ namespace grapher.DesktopSens.Models
             }
 
             // Smoothness penalty: λ Σ (f_{i+1} - f_i)^2
-            double smooth = DesktopSensConstants.SampleLutSmoothWeight;
+            double smooth = DesktopSensConstants.SampleLutSmoothWeight * Math.Max(1.0, nodeDensityScale);
             for (int i = 0; i < n - 1; i++)
             {
                 normal[i, i] += smooth;

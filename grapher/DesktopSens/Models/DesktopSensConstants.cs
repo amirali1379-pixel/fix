@@ -117,7 +117,7 @@ namespace grapher.DesktopSens.Models
         // CalibrationResidualCache entries written under v8/v9 (which used the
         // raw TargetDistanceCm in zone aggregation) must not be reused — the
         // aggregated targets differ, so any cached factor is invalid.
-        public const int CurrentModelVersion = 12;
+        public const int CurrentModelVersion = 13;
 
         // Shared calibration defaults and physical thresholds.
         public const double NeutralFactor = 1.0;
@@ -240,13 +240,13 @@ namespace grapher.DesktopSens.Models
         // ─────────────────────────────────────────────────────────────────────────
 
         /// <summary>Default number of interpolation nodes in the sample-fit LUT.</summary>
-        public const int SampleLutDefaultNodes = 12;
+        public const int SampleLutDefaultNodes = 40;
 
         /// <summary>Minimum nodes (below this the fit is under-determined).</summary>
         public const int SampleLutMinNodes = 8;
 
         /// <summary>Maximum nodes (RawAccel caps at 257 points; we keep room for bookends).</summary>
-        public const int SampleLutMaxNodes = 16;
+        public const int SampleLutMaxNodes = 96;
 
         /// <summary>Speed range for the sample-fit nodes (cm/s).</summary>
         public const double SampleLutMinSpeedCmPerSec = 1.0;
@@ -284,10 +284,12 @@ namespace grapher.DesktopSens.Models
         public const double TrainingTrialZoneEntryToleranceCm = 0.05;
 
         /// <summary>Ridge prior on (f - 1) to keep the fit well-behaved when data is sparse.</summary>
-        public const double SampleLutPriorWeight = 1e-3;
+        // Strong ridge prior keeps unsupported nodes near neutral on the dense LUT grid.
+        public const double SampleLutPriorWeight = 0.05;
 
         /// <summary>Smoothness penalty between adjacent nodes.</summary>
-        public const double SampleLutSmoothWeight = 1e-3;
+        // First-difference penalty; scaled with node density by SampleLutFitter.
+        public const double SampleLutSmoothWeight = 0.5;
 
         /// <summary>
         /// Anchor weight for previously-verified LUT points. Anchors pin the
