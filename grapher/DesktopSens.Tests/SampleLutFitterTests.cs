@@ -703,6 +703,32 @@ namespace grapher.DesktopSens.Tests
         }
 
         [Fact]
+        public void SampleProcessor_CoalescingShortIntervals_PreservesTotalProjectedDisplacement()
+        {
+            var trial = MakeSyntheticTrial(speedCountsPerSec: 1.0,
+                targetCm: 5.0, neededCm: 5.0, flickCm: 5.0);
+            long shortTicks = Math.Max(1L, (long)(Stopwatch.Frequency * 0.0005));
+            long timestamp = trial.RawSamples[0].Timestamp;
+            for (int i = 1; i < trial.RawSamples.Count; i++)
+            {
+                timestamp += shortTicks;
+                var sample = trial.RawSamples[i];
+                sample.Timestamp = timestamp;
+                trial.RawSamples[i] = sample;
+            }
+
+            double angleRad = trial.TargetAngleDegrees * Math.PI / 180.0;
+            double expected = 0.0;
+            foreach (var sample in trial.RawSamples)
+                expected += (sample.DX * Math.Cos(angleRad) + sample.DY * Math.Sin(angleRad)) *
+                    DesktopSensConstants.InchesToCm / trial.EffectiveCpi;
+            double actual = 0.0;
+            foreach (var sample in SampleLutSampleProcessor.GetCachedSamples(trial))
+                if (sample.IsUsable) actual += sample.ProjectedDisplacementCm;
+            Assert.Equal(expected, actual, 8);
+        }
+
+        [Fact]
         public void FreezeBoundary_IgnoresSubMillisecondVelocitySpikes()
         {
             var profile = CreateGreenSampleFitProfile();

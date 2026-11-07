@@ -15,6 +15,9 @@ namespace grapher.DesktopSens.Models
         public double RawSpeedCmPerSec;
         public double SpeedCmPerSec;
         public double ProjectedDisplacementCm;
+        public double AccumulatedDxCounts;
+        public double AccumulatedDyCounts;
+        public long AccumulatedDeltaTicks;
         public bool IsUsable;
     }
 
@@ -52,31 +55,95 @@ namespace grapher.DesktopSens.Models
                 var samples = new System.Collections.Generic.List<SampleLutCachedSample>(
                     trial.RawSamples.Count - 1);
                 long previousTimestamp = trial.RawSamples[0].Timestamp;
+                long minimumTicks = (long)(Stopwatch.Frequency *
+                    DesktopSensConstants.SampleLutMinimumSampleIntervalMs / 1000.0);
+                double pendingDx = 0.0, pendingDy = 0.0;
+                long pendingTicks = 0;
                 for (int i = 1; i < trial.RawSamples.Count; i++)
                 {
                     MouseSample sample = trial.RawSamples[i];
                     long deltaTicks = sample.Timestamp - previousTimestamp;
                     previousTimestamp = sample.Timestamp;
+                    if (deltaTicks <= 0) continue;
 
-                    double rawSpeed = RawSpeedCmPerSec(
-                        sample.DX, sample.DY, deltaTicks, trial.EffectiveCpi);
-                    bool usable = TryProcess(
-                        sample.DX, sample.DY, deltaTicks, trial.EffectiveCpi,
-                        trial.TargetAngleDegrees, out double cleanSpeed,
-                        out double projectedDisplacement);
-                    samples.Add(new SampleLutCachedSample
+                    // Coalesce adjacent timestamp-batched samples instead of
+                    // discarding their displacement when dt is below threshold.
+                    pendingDx += sample.DX;
+                    pendingDy += sample.DY;
+                    pendingTicks += deltaTicks;
+                    if (pendingTicks < minimumTicks) continue;
+
+                    AddProcessedSample(samples, pendingDx, pendingDy, pendingTicks,
+                        trial.EffectiveCpi, trial.TargetAngleDegrees);
+                    pendingDx = pendingDy = 0.0;
+                    pendingTicks = 0;
+                }
+                if (pendingTicks > 0)
+                {
+                    if (samples.Count > 0)
                     {
-                        RawSpeedCmPerSec = rawSpeed,
-                        SpeedCmPerSec = cleanSpeed,
-                        ProjectedDisplacementCm = projectedDisplacement,
-                        IsUsable = usable && Math.Abs(projectedDisplacement) > 1e-12
-                    });
+                        SampleLutCachedSample last = samples[samples.Count - 1];
+                        AddProcessedSample(samples, last.AccumulatedDxCounts + pendingDx,
+                            last.AccumulatedDyCounts + pendingDy,
+                            last.AccumulatedDeltaTicks + pendingTicks,
+                            trial.EffectiveCpi, trial.TargetAngleDegrees);
+                        samples.RemoveAt(samples.Count - 2);
+                    }
+                    else
+                    {
+                        AddProcessedSample(samples, pendingDx, pendingDy, pendingTicks,
+                            trial.EffectiveCpi, trial.TargetAngleDegrees, allowShortInterval: true);
+                    }
                 }
 
                 SampleCache.Remove(trial);
                 SampleCache.Add(trial, new CacheEntry { Key = key, Samples = samples });
                 return samples;
             }
+        }
+
+        private static void AddProcessedSample(
+            System.Collections.Generic.List<SampleLutCachedSample> samples,
+            double dx, double dy, long ticks, double cpi, double targetAngle,
+            bool allowShortInterval = false)
+        {
+            double rawSpeed = RawSpeedCmPerSec(dx, dy, ticks, cpi);
+            double speed, displacement;
+            bool usable = allowShortInterval
+                ? TryProcessWithoutMinimumInterval(dx, dy, ticks, cpi, targetAngle, out speed, out displacement)
+                : TryProcess(dx, dy, ticks, cpi, targetAngle, out speed, out displacement);
+            samples.Add(new SampleLutCachedSample
+            {
+                RawSpeedCmPerSec = rawSpeed,
+                SpeedCmPerSec = speed,
+                ProjectedDisplacementCm = displacement,
+                AccumulatedDxCounts = dx,
+                AccumulatedDyCounts = dy,
+                AccumulatedDeltaTicks = ticks,
+                IsUsable = usable && Math.Abs(displacement) > 1e-12
+            });
+        }
+
+        private static bool TryProcessWithoutMinimumInterval(
+            double dx, double dy, long ticks, double cpi, double angle,
+            out double speed, out double displacement)
+        {
+            speed = displacement = 0.0;
+            if (ticks <= 0 || !IsFinite(cpi) || cpi <= 0.0 ||
+                !IsFinite(dx) || !IsFinite(dy)) return false;
+            double dt = ticks / (double)Stopwatch.Frequency;
+            double cmPerCount = DesktopSensConstants.InchesToCm / cpi;
+            speed = Math.Min(Math.Sqrt(dx * dx + dy * dy) * cmPerCount / dt,
+                DesktopSensConstants.SampleLutMaximumPhysicalSpeedCmPerSec);
+            displacement = ProjectedDisplacementCm(dx, dy, cpi, angle);
+            return IsFinite(speed) && speed > 0.0 && IsFinite(displacement);
+        }
+
+        private static double ProjectedDisplacementCm(double dx, double dy, double cpi, double angle)
+        {
+            double rad = angle * Math.PI / 180.0;
+            return (dx * Math.Cos(rad) + dy * Math.Sin(rad)) *
+                DesktopSensConstants.InchesToCm / cpi;
         }
 
         private static ulong ComputeCacheKey(DesktopSensTrial trial)
